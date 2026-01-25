@@ -17,7 +17,7 @@
     "retry_delay_seconds": 300
   },
   "DATA": {
-    "RAW_PATH_FILE": "../../data/train.csv",
+    "RAW_PATH_FILE": "/home/jovyan/data/raw",
     "PROCESSED_PATH": "/home/jovyan/data/processed",
     "FEATURES_PATH": "/home/jovyan/data/features",
     "TRAIN_TEST_SPLIT": 0.2,

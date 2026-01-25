@@ -5,7 +5,9 @@ This module exposes the lightweight, commonly-used symbols from the
 lazy-loaded when accessed to avoid import-time side effects.
 """
 
+from .config_load import Config
 from .data_transform import (
+	PipelineImputer,
 	PipelineOneHotEncoder,
 	PipelineFeatureDropper,
 	PipelineFeatureStandardScaler,
@@ -15,12 +17,12 @@ from .data_transform import (
 	PipelineIndexSetter,
 	PipelineSequencer,
 )
-from .data_validate import DataValidator
-from .mlflow_log import MLflowLogger
 from .pipeline_preprocess import build_pipeline, save_pipeline, load_pipeline
 
 # Public names that are safe to import from the package.
 __all__ = [
+	"Config",
+	"PipelineImputer",
 	"PipelineOneHotEncoder",
 	"PipelineFeatureDropper",
 	"PipelineFeatureStandardScaler",
@@ -29,14 +31,11 @@ __all__ = [
 	"PipelineDateSpliter",
 	"PipelineIndexSetter",
 	"PipelineSequencer",
-	"DataValidator",
-	"MLflowLogger",
 	"build_pipeline",
 	"save_pipeline",
 	"load_pipeline",
 	# heavy modules exposed lazily
 	"model_template",
-	"model_register",
 ]
 
 
@@ -44,9 +43,9 @@ def __getattr__(name: str):
 	"""Lazy-load heavy submodules on attribute access.
 
 	This avoids importing TensorFlow/MLflow during simple package
-	imports like ``from utils import DataValidator``.
+	imports like ``from utils import Config``.
 	"""
-	if name in ("model_template", "model_register"):
+	if name in ("model_template",):
 		import importlib
 
 		module = importlib.import_module(f".{name}", __name__)
