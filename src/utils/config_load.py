@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULTS: Dict[str, Any] = {
     "config_version": 1,
-    "MLFLOW":{
+    "MLFLOW": {
         "MLFLOW_TRACKING_URI": "http://mlflow:5000",
         "MLFLOW_EXPERIMENT_NAME": "ml_pipeline",
     },
@@ -44,7 +44,7 @@ _DEFAULTS: Dict[str, Any] = {
         "TIME_SERIES_GAP": 0,
         "TIME_SERIES_EXPANDING": True,
     },
-    "PREPROCESSING":  {
+    "PREPROCESSING": {
         "PIPELINE_SPEC": {
             "steps": [
                 {"dateSplit": {"columns": [], "dropColumns": True}},
@@ -56,7 +56,7 @@ _DEFAULTS: Dict[str, Any] = {
             ]
         },
     },
-    "MODEL":{
+    "MODEL": {
         "ARTIFACTS_PATH": "/mlflow/artifacts",
         "LABEL_COLUMNS": ["target"],
         "PARAMS": {"n_estimators": 100, "max_depth": 10, "random_state": 42},
@@ -71,11 +71,10 @@ _DEFAULTS: Dict[str, Any] = {
 }
 
 class Config:
-    """Loads configuration from src/dags/config.json on each call.
+    """Loads configuration from src/config.json on each call.
 
     Validation rules:
-    - Fail-fast for critical fields: MLFLOW_TRACKING_URI, DEFAULT_DAG_ARGS.retry_delay_seconds,
-      DAG_1_SCHEDULE and DAG_2_SCHEDULE.
+    - Fail-fast for critical fields: MLFLOW.MLFLOW_TRACKING_URI, DEFAULT_DAG_ARGS.retry_delay_seconds
     - Warn and default for non-critical fields.
     """
 
@@ -86,7 +85,7 @@ class Config:
 
     @staticmethod
     def _config_path() -> Path:
-        # src/dags/utils/config_loader.py -> src/dags/config.json
+        # src/utils/config_load.py -> src/config.json
         return Path(__file__).resolve().parents[1] / "config.json"
 
     @staticmethod
@@ -106,17 +105,21 @@ class Config:
 
         # Merge defaults for missing non-critical fields (warn)
         merged = dict(_DEFAULTS)
-        # shallow merge for DEFAULT_DAG_ARGS and other dicts
+        # Deep merge for nested dicts
         for k, v in data.items():
-            if k == "DEFAULT_DAG_ARGS":
-                merged.setdefault("DEFAULT_DAG_ARGS", {}).update(v or {})
+            if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW"):
+                if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                    merged.setdefault(k, {}).update(v)
+                else:
+                    merged[k] = v
             else:
                 merged[k] = v
 
         # Validation: critical fields
-        # 1) MLFLOW_TRACKING_URI
-        if not merged.get("MLFLOW_TRACKING_URI"):
-            raise ValueError("Critical configuration missing: MLFLOW_TRACKING_URI")
+        # 1) MLFLOW.MLFLOW_TRACKING_URI
+        mlflow_cfg = merged.get("MLFLOW", {})
+        if not mlflow_cfg.get("MLFLOW_TRACKING_URI"):
+            raise ValueError("Critical configuration missing: MLFLOW.MLFLOW_TRACKING_URI")
 
         # 2) DEFAULT_DAG_ARGS.retry_delay_seconds
         dda = merged.get("DEFAULT_DAG_ARGS", {})
@@ -134,46 +137,39 @@ class Config:
                 "DEFAULT_DAG_ARGS.retry_delay_seconds must be an integer number of seconds"
             )
 
-        # 3) DAG schedules (DAG_1 and DAG_2 keys must exist;
-        # None is allowed for manual/triggered DAGs)
-        # Allow explicit null/None to indicate manual (no schedule),
-        # but still require the keys to be present.
-        if "DAG_1_SCHEDULE" not in merged:
-            raise ValueError("Critical configuration missing: DAG_1_SCHEDULE")
-        if "DAG_2_SCHEDULE" not in merged:
-            raise ValueError("Critical configuration missing: DAG_2_SCHEDULE")
-
         # Post-processing
-        # Normalize paths
-        for path_key in [
-            "DATA_RAW_PATH_FILE",
-            "DATA_PROCESSED_PATH",
-            "DATA_FEATURES_PATH",
-            "MODEL_ARTIFACTS_PATH"
-        ]:
-            merged[path_key] = cls._normalize_path(merged.get(path_key))
+        # Normalize paths in nested DATA and MODEL
+        if "DATA" in merged and isinstance(merged["DATA"], dict):
+            for path_key in ["RAW_PATH_FILE", "PROCESSED_PATH", "FEATURES_PATH"]:
+                if path_key in merged["DATA"]:
+                    merged["DATA"][path_key] = cls._normalize_path(merged["DATA"][path_key])
+        
+        if "MODEL" in merged and isinstance(merged["MODEL"], dict):
+            if "ARTIFACTS_PATH" in merged["MODEL"]:
+                merged["MODEL"]["ARTIFACTS_PATH"] = cls._normalize_path(merged["MODEL"]["ARTIFACTS_PATH"])
 
         # Ensure email is list
         email = merged.get("ALERT_EMAIL")
         if isinstance(email, str):
             merged["ALERT_EMAIL"] = [email]
 
-        # Normalize LABEL_COLUMNS: accept string or list, ensure list of strings
-        lc = merged.get("LABEL_COLUMNS")
-        if lc is None:
-            merged["LABEL_COLUMNS"] = ["target"]
-        elif isinstance(lc, str):
-            merged["LABEL_COLUMNS"] = [lc]
-        elif isinstance(lc, (list, tuple)):
-            merged["LABEL_COLUMNS"] = [str(x) for x in lc]
-        else:
-            raise ValueError("LABEL_COLUMNS must be a string or a list/tuple of strings")
+        # Normalize LABEL_COLUMNS in MODEL: accept string or list, ensure list of strings
+        if "MODEL" in merged and isinstance(merged["MODEL"], dict):
+            lc = merged["MODEL"].get("LABEL_COLUMNS")
+            if lc is None:
+                merged["MODEL"]["LABEL_COLUMNS"] = ["target"]
+            elif isinstance(lc, str):
+                merged["MODEL"]["LABEL_COLUMNS"] = [lc]
+            elif isinstance(lc, (list, tuple)):
+                merged["MODEL"]["LABEL_COLUMNS"] = [str(x) for x in lc]
+            else:
+                raise ValueError("MODEL.LABEL_COLUMNS must be a string or a list/tuple of strings")
 
-        # Validate elements
-        if not isinstance(merged.get("LABEL_COLUMNS"), list) or not all(
-            isinstance(x, str) and x.strip() for x in merged.get("LABEL_COLUMNS")
-        ):
-            raise ValueError("LABEL_COLUMNS must be a non-empty list of non-empty strings")
+            # Validate elements
+            if not isinstance(merged["MODEL"].get("LABEL_COLUMNS"), list) or not all(
+                isinstance(x, str) and x.strip() for x in merged["MODEL"].get("LABEL_COLUMNS")
+            ):
+                raise ValueError("MODEL.LABEL_COLUMNS must be a non-empty list of non-empty strings")
 
         # Convert retry_delay_seconds -> timedelta and attach to DEFAULT_DAG_ARGS.retry_delay
         merged.setdefault("DEFAULT_DAG_ARGS", {})

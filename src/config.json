@@ -1,0 +1,65 @@
+{
+  "config_version": 1,
+  "MLFLOW": {
+    "MLFLOW_TRACKING_URI": "http://mlflow:5000",
+    "MLFLOW_EXPERIMENT_NAME": "ml_pipeline"
+  },
+  "RANDOM_SEED": 42,
+  "ALERT_EMAIL": ["admin@example.com"],
+  "SLACK_WEBHOOK": null,
+  "DEFAULT_DAG_ARGS": {
+    "owner": "data-science-team",
+    "depends_on_past": false,
+    "email": ["admin@example.com"],
+    "email_on_failure": true,
+    "email_on_retry": false,
+    "retries": 2,
+    "retry_delay_seconds": 300
+  },
+  "DATA": {
+    "RAW_PATH_FILE": "/home/jovyan/data/raw",
+    "PROCESSED_PATH": "/home/jovyan/data/processed",
+    "FEATURES_PATH": "/home/jovyan/data/features",
+    "TRAIN_TEST_SPLIT": 0.2,
+    "VALIDATION_RULES": {
+      "max_null_percentage": 0.1,
+      "min_rows": 100,
+      "required_columns": []
+    },
+    "FOLD_TYPE": null,
+    "NUM_FOLDS": 5,
+    "KFOLD_SHUFFLE": true,
+    "KFOLD_RANDOM_STATE": 42,
+    "TIME_COLUMN": null,
+    "TIME_SERIES_GAP": 0,
+    "TIME_SERIES_EXPANDING": true
+  },
+  "PREPROCESSING": {
+    "PIPELINE_SPEC": {
+      "steps": [
+        {"dateSplit": {"columns": [], "dropColumns": true}},
+        {"scaler": {"columns": []}},
+        {"onehot": {"columns": []}},
+        {"drop": {"columns": []}},
+        {"index": {"column": ""}},
+        {"sequencer": {"column": "", "sequence_length": 60}}
+      ]
+    }
+  },
+  "MODEL": {
+    "ARTIFACTS_PATH": "/mlflow/artifacts",
+    "LABEL_COLUMNS": ["target"],
+    "PARAMS": {
+      "n_estimators": 100,
+      "max_depth": 10,
+      "random_state": 42
+    },
+    "VALIDATION_THRESHOLDS": {
+      "min_accuracy": 0.75,
+      "min_precision": 0.7,
+      "min_recall": 0.7,
+      "min_f1": 0.7,
+      "max_inference_time_ms": 1000
+    }
+  }
+}
