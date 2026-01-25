@@ -1,0 +1,14 @@
+- greeting:
+    text_size: 3xl
+    text: "ML Workbench Dashboard"
+
+- search:
+    provider: google 
+    target: _blank
+
+- datetime:
+    text_size: md
+    format:
+      dateStyle: short
+      timeStyle: short
+      hour12: true

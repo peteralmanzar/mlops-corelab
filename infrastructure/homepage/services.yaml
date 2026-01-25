@@ -1,0 +1,38 @@
+- MLOps:
+  - Airflow:
+      href: http://localhost:8080
+      description: Workflow orchestration
+      icon: apache-airflow.png
+      ping: http://airflow-apiserver:8080
+
+  - Kestra:
+      href: http://localhost:8081
+      description: Declarative workflow orchestration
+      icon: mdi-sitemap
+      ping: http://kestra:8080
+
+  - MLflow:
+      href: http://localhost:5000
+      description: ML model tracking
+      icon: si-mlflow
+      ping: http://mlflow:5000
+
+  - Model API:
+      href: http://localhost:8000/docs
+      description: ML prediction API
+      icon: si-fastapi
+      ping: http://localhost:8000/health
+      
+- Code:
+  - JupyterLab:
+      href: http://localhost:8888
+      description: Data science notebooks
+      icon: jupyter.png
+      ping: https://localhost:8888
+
+- Data:
+  - pgAdmin:
+      href: http://localhost:5050
+      description: Database administration
+      icon: pgadmin.png
+      ping: http://localhost:5050

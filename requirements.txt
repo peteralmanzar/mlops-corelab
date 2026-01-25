@@ -1,0 +1,6 @@
+scikit-learn>=1.7.2 
+mlflow-skinny==3.8.1 
+matplotlib>=3.10.8 
+seaborn 
+pandas 
+joblib

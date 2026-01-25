@@ -1,0 +1,8 @@
+CREATE DATABASE mlflow;
+
+CREATE USER mlflow WITH ENCRYPTED PASSWORD 'mlflow_pwd';
+GRANT ALL PRIVILEGES ON DATABASE mlflow TO mlflow;
+
+\c mlflow;
+GRANT ALL ON SCHEMA public TO mlflow;
+GRANT CREATE ON SCHEMA public TO mlflow;

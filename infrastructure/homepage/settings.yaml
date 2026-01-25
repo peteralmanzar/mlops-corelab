@@ -1,0 +1,24 @@
+title: ML Workbench Dashboard
+theme: dark
+headerStyle: boxed
+statusStyle: "dot"
+useEqualHeights: true
+disableCollapse: true
+logpath: /app/logs
+
+layout:
+  MLOps:
+    tab: MLOps
+  Automation:
+    tab: MLOps
+  Code:
+    tab: Code
+  Data:
+    tab: Data
+
+  Documentation:
+    tab: Resources
+  ML Resources:
+    tab: Resources
+  Developer Resources:
+    tab: Resources
