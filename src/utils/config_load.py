@@ -29,7 +29,6 @@ _DEFAULTS: Dict[str, Any] = {
     "DATA": {
         "RAW_PATH_FILE": "/home/jovyan/data/raw",
         "PROCESSED_PATH": "/home/jovyan/data/processed",
-        "FEATURES_PATH": "/home/jovyan/data/features",
         "TRAIN_TEST_SPLIT": 0.2,
         "VALIDATION_RULES": {
             "max_null_percentage": 0.1,
@@ -40,11 +39,13 @@ _DEFAULTS: Dict[str, Any] = {
         "NUM_FOLDS": 5,
         "KFOLD_SHUFFLE": True,
         "KFOLD_RANDOM_STATE": 42,
+        "STRATIFY_COLUMN": None,
         "TIME_COLUMN": None,
         "TIME_SERIES_GAP": 0,
         "TIME_SERIES_EXPANDING": True,
     },
     "PREPROCESSING": {
+        "FEATURES_PATH": "/home/jovyan/data/features",
         "PIPELINE_SPEC": {
             "steps": [
                 {"dateSplit": {"columns": [], "dropColumns": True}},
@@ -138,11 +139,15 @@ class Config:
             )
 
         # Post-processing
-        # Normalize paths in nested DATA and MODEL
+        # Normalize paths in nested DATA, PREPROCESSING, and MODEL
         if "DATA" in merged and isinstance(merged["DATA"], dict):
-            for path_key in ["RAW_PATH_FILE", "PROCESSED_PATH", "FEATURES_PATH"]:
+            for path_key in ["RAW_PATH_FILE", "PROCESSED_PATH"]:
                 if path_key in merged["DATA"]:
                     merged["DATA"][path_key] = cls._normalize_path(merged["DATA"][path_key])
+        
+        if "PREPROCESSING" in merged and isinstance(merged["PREPROCESSING"], dict):
+            if "FEATURES_PATH" in merged["PREPROCESSING"]:
+                merged["PREPROCESSING"]["FEATURES_PATH"] = cls._normalize_path(merged["PREPROCESSING"]["FEATURES_PATH"])
         
         if "MODEL" in merged and isinstance(merged["MODEL"], dict):
             if "ARTIFACTS_PATH" in merged["MODEL"]:

@@ -19,7 +19,6 @@
   "DATA": {
     "RAW_PATH_FILE": "/home/jovyan/data/raw",
     "PROCESSED_PATH": "/home/jovyan/data/processed",
-    "FEATURES_PATH": "/home/jovyan/data/features",
     "TRAIN_TEST_SPLIT": 0.2,
     "VALIDATION_RULES": {
       "max_null_percentage": 0.1,
@@ -30,11 +29,13 @@
     "NUM_FOLDS": 5,
     "KFOLD_SHUFFLE": true,
     "KFOLD_RANDOM_STATE": 42,
+    "STRATIFY_COLUMN": null,
     "TIME_COLUMN": null,
     "TIME_SERIES_GAP": 0,
     "TIME_SERIES_EXPANDING": true
   },
   "PREPROCESSING": {
+    "FEATURES_PATH": "/home/jovyan/data/features",
     "PIPELINE_SPEC": {
       "steps": [
         {"dateSplit": {"columns": [], "dropColumns": true}},
