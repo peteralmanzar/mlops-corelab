@@ -1,8 +1,14 @@
 """
 01_dag_data - Data Pipeline DAG
 
-This DAG handles data-related operations for the ML pipeline.
-Currently empty - tasks to be added.
+This DAG handles comprehensive data operations for the ML pipeline:
+- Loads raw data from configured source
+- Performs exploratory data analysis (EDA) with MLflow logging
+- Creates train/test splits with support for multiple cross-validation strategies:
+  * Simple train/test split
+  * K-Fold cross-validation
+  * Stratified K-Fold cross-validation
+  * Time Series split with gap and expanding/sliding window support
 """
 from datetime import datetime
 
@@ -19,6 +25,7 @@ from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, Ti
 # Add utils to path for config loading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
 from config_load import Config
+from mlflow_logger import MLFlowLogger
 
 # Import assets for data-aware scheduling
 from assets import RAW_DATA_ASSET, CLEANED_DATA_ASSET
@@ -47,6 +54,130 @@ def load_raw_data(**context):
     context['ti'].xcom_push(key='raw_data_path', value=raw_path)
     
     return f"Successfully loaded {df.shape[0]} rows and {df.shape[1]} columns"
+
+
+def perform_eda(**context):
+    """
+    Perform Exploratory Data Analysis (EDA) on raw data and log to MLflow.
+    
+    Logs comprehensive dataset information including:
+    - Column names and data types
+    - Total number of rows
+    - Non-null and null counts per column
+    - Basic statistics
+    """
+    # Load raw data
+    raw_path = config.DATA.get("RAW_PATH_FILE")
+    print(f"Performing EDA on data from: {raw_path}")
+    
+    df = pd.read_csv(raw_path)
+    
+    # Initialize MLflow logger
+    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    
+    logger = MLFlowLogger(
+        tracking_uri=mlflow_tracking_uri,
+        experiment_name=mlflow_experiment_name
+    )
+    
+    # Start MLflow run
+    run_name = f"EDA_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    tags = {
+        "task_type": "eda",
+        "data_source": "raw",
+        "dag_id": context.get('dag').dag_id,
+        "task_id": context.get('task').task_id,
+        "execution_date": str(context.get('execution_date'))
+    }
+    
+    try:
+        logger.start_run(run_name=run_name, tags=tags)
+        
+        # Log dataset information (columns, dtypes, null counts, etc.)
+        dataset_info = logger.log_dataset_info(df, dataset_name="raw_data")
+        
+        # Calculate and log additional statistics
+        numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        
+        metrics = {
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+            "numeric_columns_count": len(numeric_cols),
+            "categorical_columns_count": len(categorical_cols),
+            "total_missing_values": int(df.isna().sum().sum()),
+            "missing_percentage": round((df.isna().sum().sum() / (len(df) * len(df.columns))) * 100, 2),
+            "duplicate_rows": int(df.duplicated().sum())
+        }
+        
+        logger.log_metrics(metrics)
+        
+        # Log basic statistics for numeric columns
+        if len(numeric_cols) > 0:
+            stats_dict = df[numeric_cols].describe().to_dict()
+            logger.log_params({
+                "numeric_columns": ",".join(numeric_cols),
+                "categorical_columns": ",".join(categorical_cols)
+            })
+        
+        # Create summary text report
+        summary_lines = [
+            "=" * 60,
+            "EXPLORATORY DATA ANALYSIS SUMMARY",
+            "=" * 60,
+            f"Dataset: {raw_path}",
+            f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "DATASET OVERVIEW:",
+            f"  - Total Rows: {len(df):,}",
+            f"  - Total Columns: {len(df.columns)}",
+            f"  - Numeric Columns: {len(numeric_cols)}",
+            f"  - Categorical Columns: {len(categorical_cols)}",
+            "",
+            "DATA QUALITY:",
+            f"  - Total Missing Values: {int(df.isna().sum().sum()):,}",
+            f"  - Missing Percentage: {metrics['missing_percentage']}%",
+            f"  - Duplicate Rows: {metrics['duplicate_rows']:,}",
+            "",
+            "COLUMN INFORMATION:"
+        ]
+        
+        for col in df.columns:
+            non_null = int(df[col].count())
+            null_count = int(df[col].isna().sum())
+            dtype = str(df[col].dtype)
+            summary_lines.append(
+                f"  - {col}: {dtype} | Non-null: {non_null:,} | Null: {null_count:,}"
+            )
+        
+        summary_lines.append("=" * 60)
+        summary_text = "\n".join(summary_lines)
+        
+        # Log summary as text artifact
+        logger.log_text(summary_text, "eda_summary.txt")
+        
+        print("\n" + summary_text)
+        
+        # End MLflow run
+        logger.end_run(status="FINISHED")
+        
+        # Push EDA summary to XCom
+        context['ti'].xcom_push(key='eda_summary', value={
+            'run_id': logger.get_run_id(),
+            'total_rows': metrics['total_rows'],
+            'total_columns': metrics['total_columns'],
+            'missing_percentage': metrics['missing_percentage'],
+            'numeric_columns': len(numeric_cols),
+            'categorical_columns': len(categorical_cols)
+        })
+        
+        return f"EDA completed and logged to MLflow (Run ID: {logger.get_run_id()})"
+        
+    except Exception as e:
+        print(f"Error during EDA: {e}")
+        logger.end_run(status="FAILED")
+        raise
 
 
 def split_data(**context):
@@ -271,7 +402,7 @@ def split_data(**context):
 with DAG(
     dag_id="01_dag_data",
     default_args=config.DEFAULT_DAG_ARGS,
-    description="Data pipeline DAG - handles data ingestion and validation",
+    description="Data pipeline DAG - loads raw data, performs exploratory data analysis with MLflow logging, and creates train/test splits with support for simple, K-Fold, Stratified K-Fold, and Time Series cross-validation strategies",
     schedule=None,  # Manual trigger for now
     start_date=datetime(2026, 1, 1),
     catchup=False,
@@ -287,7 +418,14 @@ with DAG(
         outlets=[RAW_DATA_ASSET],  # This task produces the raw data asset
     )
     
-    # Task 2: Split data
+    # Task 2: Perform EDA and log to MLflow
+    eda_task = PythonOperator(
+        task_id="eda_task",
+        python_callable=perform_eda,
+        provide_context=True,
+    )
+    
+    # Task 3: Split data
     data_split = PythonOperator(
         task_id="data_split",
         python_callable=split_data,
@@ -295,4 +433,4 @@ with DAG(
     )
     
     # Task dependencies
-    raw_data_load >> data_split
+    raw_data_load >> eda_task >> data_split
