@@ -2,12 +2,14 @@
 
 Builds sklearn-style pipelines from a simple spec and provides save/load helpers.
 """
+import logging
 from pathlib import Path
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 import joblib
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
+from utils.config_load import Config
 from utils.data_transform import (
         PipelineOneHotEncoder,
         PipelineFeatureStandardScaler,
@@ -18,13 +20,70 @@ from utils.data_transform import (
         PipelineImputer,
     )
 
-def build_pipeline(spec: Dict[str, Any]) -> Pipeline:
-    """Build an sklearn Pipeline from a spec dict.
+logger = logging.getLogger(__name__)
 
+
+def _get_pipeline_spec(config: Config) -> Dict[str, Any]:
+    """Extract pipeline specification from config.
+    
+    Supports both nested PREPROCESSING.PIPELINE_SPEC and flat PREPROCESSING_PIPELINE_SPEC.
+    
+    Parameters
+    ----------
+    config : Config
+        Configuration object.
+    
+    Returns
+    -------
+    dict
+        Pipeline specification with 'steps' key.
+    """
+    # Try nested structure first (PREPROCESSING.PIPELINE_SPEC)
+    if hasattr(config, 'PREPROCESSING') and isinstance(config.PREPROCESSING, dict):
+        spec = config.PREPROCESSING.get('PIPELINE_SPEC')
+        if spec and isinstance(spec, dict) and 'steps' in spec:
+            logger.info("Loaded pipeline spec from PREPROCESSING.PIPELINE_SPEC")
+            return spec
+    
+    # Try flat structure (PREPROCESSING_PIPELINE_SPEC)
+    if hasattr(config, 'PREPROCESSING_PIPELINE_SPEC') and isinstance(config.PREPROCESSING_PIPELINE_SPEC, dict):
+        spec = config.PREPROCESSING_PIPELINE_SPEC
+        if 'steps' in spec:
+            logger.info("Loaded pipeline spec from PREPROCESSING_PIPELINE_SPEC")
+            return spec
+    
+    # Default empty pipeline
+    logger.warning("No pipeline specification found in config. Using empty pipeline.")
+    return {"steps": []}
+
+
+def build_pipeline(config: Optional[Config] = None) -> Pipeline:
+    """Build an sklearn Pipeline from Config object.
+
+    Loads pipeline specification from Config.PREPROCESSING.PIPELINE_SPEC or 
+    Config.PREPROCESSING_PIPELINE_SPEC and builds the corresponding sklearn Pipeline.
+    
+    Parameters
+    ----------
+    config : Config, optional
+        Configuration object. If None, will load from default location.
+    
+    Returns
+    -------
+    Pipeline
+        sklearn Pipeline with configured preprocessing steps.
+    
     Spec format example:
       {"steps": [ {"drop": {"columns": [...] }}, {"onehot": {...}}, {"scaler": {...}} ] }
-    Supported step keys: drop, onehot, scaler, dateSplit, index, dataSplit, datasplit_to_numpy, sequencer
+    Supported step keys: drop, onehot, scaler, dateSplit, index, imputer, sequencer
     """
+    # Load config if not provided
+    if config is None:
+        config = Config.load()
+    
+    # Extract pipeline spec from config
+    spec = _get_pipeline_spec(config)
+    
     steps: List = []
 
     for i, step in enumerate(spec.get("steps", [])):

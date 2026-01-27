@@ -25,7 +25,7 @@ from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, Ti
 # Add utils to path for config loading
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
 from config_load import Config
-from mlflow_logger import MLFlowLogger
+from mlflow_log import MLFlowLogger
 
 # Import assets for data-aware scheduling
 from assets import RAW_DATA_ASSET, CLEANED_DATA_ASSET

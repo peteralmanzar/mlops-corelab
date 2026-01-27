@@ -17,7 +17,8 @@ from .data_transform import (
 	PipelineIndexSetter,
 	PipelineSequencer,
 )
-from .pipeline_preprocess import build_pipeline, save_pipeline, load_pipeline
+from .data_pipeline import build_pipeline, save_pipeline, load_pipeline
+from .mlflow_log import MLFlowLogger
 
 # Public names that are safe to import from the package.
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
 	"build_pipeline",
 	"save_pipeline",
 	"load_pipeline",
+	"MLFlowLogger",
 	# heavy modules exposed lazily
 	"model_template",
 ]
