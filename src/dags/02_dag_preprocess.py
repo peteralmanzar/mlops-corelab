@@ -542,7 +542,6 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=["preprocessing", "ml-pipeline"],
-    outlets=[PREPROCESSING_PIPELINE_ASSET, TRANSFORMED_DATA_ASSET],
 ) as dag:
     
     # Task 1: Load split metadata from DAG 1
@@ -575,13 +574,13 @@ with DAG(
         features_path="{{ ti.xcom_pull(task_ids='transform_prepare', key='features_path') }}",
         label_cols="{{ ti.xcom_pull(task_ids='transform_prepare', key='label_cols') }}"
     )
+    split_transform_tasks.operator.outlets = [TRANSFORMED_DATA_ASSET]  # This task produces the transformed data
     
     # Task 5: Perform EDA on preprocessed data
     preprocessed_eda_task = PythonOperator(
         task_id="preprocessed_eda",
         python_callable=preprocessed_eda,
         provide_context=True,
-        outlets=[TRANSFORMED_DATA_ASSET],
     )
     
     # Task dependencies

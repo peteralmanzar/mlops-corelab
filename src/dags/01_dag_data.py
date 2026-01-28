@@ -28,7 +28,7 @@ from config_load import Config
 from mlflow_log import MLFlowLogger
 
 # Import assets for data-aware scheduling
-from assets import RAW_DATA_ASSET, CLEANED_DATA_ASSET
+from assets import RAW_DATA_ASSET, TRAIN_TEST_SPLIT_ASSET
 
 # Load configuration
 config = Config.load()
@@ -436,7 +436,6 @@ with DAG(
     start_date=datetime(2026, 1, 1),
     catchup=False,
     tags=["data", "ml-pipeline"],
-    outlets=[RAW_DATA_ASSET],  # This DAG produces raw data asset
 ) as dag:
     
     # Task 1: Load raw data
@@ -459,6 +458,7 @@ with DAG(
         task_id="data_split",
         python_callable=split_data,
         provide_context=True,
+        outlets=[TRAIN_TEST_SPLIT_ASSET],  # This task produces the train/test split asset
     )
     
     # Task dependencies
