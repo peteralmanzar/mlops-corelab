@@ -36,7 +36,7 @@ from assets import TRAIN_TEST_SPLIT_ASSET, PREPROCESSING_PIPELINE_ASSET, TRANSFO
 config = Config.load()
 
 
-def load_split_metadata(**context):
+def metadata_load(**context):
     """
     Load split metadata from 01_dag_data XCom.
     Returns information about split type and file paths.
@@ -77,7 +77,7 @@ def load_split_metadata(**context):
     return f"Loaded {split_type} split metadata"
 
 
-def build_and_save_pipeline(**context):
+def pipeline_build(**context):
     """
     Build preprocessing pipeline from config and save it.
     Uses a global pipeline that will be applied to all splits/folds.
@@ -95,7 +95,7 @@ def build_and_save_pipeline(**context):
     
     # Load training data to fit the pipeline
     ti = context['ti']
-    metadata = ti.xcom_pull(task_ids='load_split_metadata', key='split_metadata')
+    metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
     
     if metadata['split_type'] == 'simple':
         train_path = metadata['train_path']
@@ -226,7 +226,7 @@ def build_and_save_pipeline(**context):
 
 
 @task
-def transform_split(split_info: dict, pipeline_path: str, features_path: str, label_cols: list):
+def split_transform(split_info: dict, pipeline_path: str, features_path: str, label_cols: list):
     """
     Transform a single train/test split using the pipeline.
     This task is designed for dynamic task mapping (parallel execution).
@@ -307,14 +307,14 @@ def transform_split(split_info: dict, pipeline_path: str, features_path: str, la
     }
 
 
-def prepare_transform_tasks(**context):
+def transform_prepare(**context):
     """
     Prepare the list of splits to transform in parallel.
     Returns list of split dictionaries for dynamic task mapping.
     """
     ti = context['ti']
-    metadata = ti.xcom_pull(task_ids='load_split_metadata', key='split_metadata')
-    pipeline_path = ti.xcom_pull(task_ids='build_and_save_pipeline', key='pipeline_path')
+    metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
+    pipeline_path = ti.xcom_pull(task_ids='pipeline_build', key='pipeline_path')
     
     features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
     label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
@@ -340,13 +340,13 @@ def prepare_transform_tasks(**context):
     return splits_to_process
 
 
-def perform_eda_preprocessed(**context):
+def preprocessed_eda(**context):
     """
     Perform EDA on preprocessed data and log to MLflow.
     Includes correlation heatmap and feature statistics.
     """
     ti = context['ti']
-    metadata = ti.xcom_pull(task_ids='load_split_metadata', key='split_metadata')
+    metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
     features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
     
     # Load transformed training data
@@ -546,43 +546,43 @@ with DAG(
 ) as dag:
     
     # Task 1: Load split metadata from DAG 1
-    load_metadata = PythonOperator(
-        task_id="load_split_metadata",
-        python_callable=load_split_metadata,
+    metadata_load_task = PythonOperator(
+        task_id="metadata_load",
+        python_callable=metadata_load,
         provide_context=True,
     )
     
     # Task 2: Build and save preprocessing pipeline
-    build_pipeline_task = PythonOperator(
-        task_id="build_and_save_pipeline",
-        python_callable=build_and_save_pipeline,
+    pipeline_build_task = PythonOperator(
+        task_id="pipeline_build",
+        python_callable=pipeline_build,
         provide_context=True,
         outlets=[PREPROCESSING_PIPELINE_ASSET],
     )
     
     # Task 3: Prepare transform tasks (prepares list for parallel processing)
-    prepare_transforms = PythonOperator(
-        task_id="prepare_transform_tasks",
-        python_callable=prepare_transform_tasks,
+    transform_prepare_task = PythonOperator(
+        task_id="transform_prepare",
+        python_callable=transform_prepare,
         provide_context=True,
     )
     
     # Task 4: Transform splits in parallel using dynamic task mapping
-    transform_tasks = transform_split.expand(
-        split_info="{{ ti.xcom_pull(task_ids='prepare_transform_tasks', key='splits_to_process') }}"
+    split_transform_tasks = split_transform.expand(
+        split_info="{{ ti.xcom_pull(task_ids='transform_prepare', key='splits_to_process') }}"
     ).partial(
-        pipeline_path="{{ ti.xcom_pull(task_ids='prepare_transform_tasks', key='pipeline_path') }}",
-        features_path="{{ ti.xcom_pull(task_ids='prepare_transform_tasks', key='features_path') }}",
-        label_cols="{{ ti.xcom_pull(task_ids='prepare_transform_tasks', key='label_cols') }}"
+        pipeline_path="{{ ti.xcom_pull(task_ids='transform_prepare', key='pipeline_path') }}",
+        features_path="{{ ti.xcom_pull(task_ids='transform_prepare', key='features_path') }}",
+        label_cols="{{ ti.xcom_pull(task_ids='transform_prepare', key='label_cols') }}"
     )
     
     # Task 5: Perform EDA on preprocessed data
-    eda_preprocessed = PythonOperator(
-        task_id="eda_preprocessed",
-        python_callable=perform_eda_preprocessed,
+    preprocessed_eda_task = PythonOperator(
+        task_id="preprocessed_eda",
+        python_callable=preprocessed_eda,
         provide_context=True,
         outlets=[TRANSFORMED_DATA_ASSET],
     )
     
     # Task dependencies
-    load_metadata >> build_pipeline_task >> prepare_transforms >> transform_tasks >> eda_preprocessed
+    metadata_load_task >> pipeline_build_task >> transform_prepare_task >> split_transform_tasks >> preprocessed_eda_task
