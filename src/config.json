@@ -29,7 +29,7 @@
     "NUM_FOLDS": 5,
     "KFOLD_SHUFFLE": true,
     "KFOLD_RANDOM_STATE": 42,
-    "STRATIFY_COLUMN": null,
+    "STRATIFY_COLUMN": "Survived",
     "TIME_COLUMN": null,
     "TIME_SERIES_GAP": 0,
     "TIME_SERIES_EXPANDING": true

@@ -8,69 +8,6 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
-_DEFAULTS: Dict[str, Any] = {
-    "config_version": 1,
-    "MLFLOW": {
-        "MLFLOW_TRACKING_URI": "http://mlflow:5000",
-        "MLFLOW_EXPERIMENT_NAME": "ml_pipeline",
-    },
-    "RANDOM_SEED": 42,
-    "ALERT_EMAIL": ["admin@example.com"],
-    "SLACK_WEBHOOK": None,
-    "DEFAULT_DAG_ARGS": {
-        "owner": "data-science-team",
-        "depends_on_past": False,
-        "email": ["admin@example.com"],
-        "email_on_failure": True,
-        "email_on_retry": False,
-        "retries": 2,
-        "retry_delay_seconds": 300,
-    },
-    "DATA": {
-        "RAW_PATH_FILE": "/home/jovyan/data/raw",
-        "PROCESSED_PATH": "/home/jovyan/data/processed",
-        "TRAIN_TEST_SPLIT": 0.2,
-        "VALIDATION_RULES": {
-            "max_null_percentage": 0.1,
-            "min_rows": 100,
-            "required_columns": []
-        },
-        "FOLD_TYPE": None,
-        "NUM_FOLDS": 5,
-        "KFOLD_SHUFFLE": True,
-        "KFOLD_RANDOM_STATE": 42,
-        "STRATIFY_COLUMN": None,
-        "TIME_COLUMN": None,
-        "TIME_SERIES_GAP": 0,
-        "TIME_SERIES_EXPANDING": True,
-    },
-    "PREPROCESSING": {
-        "FEATURES_PATH": "/home/jovyan/data/features",
-        "PIPELINE_SPEC": {
-            "steps": [
-                {"dateSplit": {"columns": [], "dropColumns": True}},
-                {"scaler": {"columns": []}},
-                {"onehot": {"columns": []}},
-                {"drop": {"columns": []}},
-                {"index": {"column": ""}},
-                {"sequencer": {"column": "", "sequence_length": 60}},
-            ]
-        },
-    },
-    "MODEL": {
-        "ARTIFACTS_PATH": "/mlflow/artifacts",
-        "LABEL_COLUMNS": ["target"],
-        "PARAMS": {"n_estimators": 100, "max_depth": 10, "random_state": 42},
-        "VALIDATION_THRESHOLDS": {
-            "min_accuracy": 0.75,
-            "min_precision": 0.7,
-            "min_recall": 0.7,
-            "min_f1": 0.7,
-            "max_inference_time_ms": 1000
-        },
-    },
-}
-
 class Config:
     """Loads configuration from src/config.json on each call.
 
@@ -90,6 +27,11 @@ class Config:
         return Path(__file__).resolve().parents[1] / "config.json"
 
     @staticmethod
+    def _model_config_path() -> Path:
+        # src/utils/config_load.py -> src/config.model.json
+        return Path(__file__).resolve().parents[1] / "config.model.json"
+
+    @staticmethod
     def _normalize_path(p: Any) -> Any:
         if isinstance(p, str) and p:
             return os.path.abspath(os.path.expanduser(p))
@@ -97,24 +39,35 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
+        # Load base configuration from config.model.json
+        model_cfg_path = cls._model_config_path()
+        if not model_cfg_path.exists():
+            raise FileNotFoundError(f"Model config file not found: {model_cfg_path}")
+
+        with open(model_cfg_path, "r", encoding="utf-8") as f:
+            merged = json.load(f)
+        
+        # Remove comment field if present
+        merged.pop("_comment", None)
+
+        # Overlay with user configuration from config.json (optional)
         cfg_path = cls._config_path()
-        if not cfg_path.exists():
-            raise FileNotFoundError(f"Config file not found: {cfg_path}")
-
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Merge defaults for missing non-critical fields (warn)
-        merged = dict(_DEFAULTS)
-        # Deep merge for nested dicts
-        for k, v in data.items():
-            if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW"):
-                if isinstance(v, dict) and isinstance(merged.get(k), dict):
-                    merged.setdefault(k, {}).update(v)
+        if cfg_path.exists():
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            # Deep merge for nested dicts
+            for k, v in data.items():
+                if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW"):
+                    if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                        merged.setdefault(k, {}).update(v)
+                    else:
+                        merged[k] = v
                 else:
                     merged[k] = v
-            else:
-                merged[k] = v
+            logger.info("Loaded user configuration from %s", cfg_path)
+        else:
+            logger.warning("User config file not found at %s, using model defaults only", cfg_path)
 
         # Validation: critical fields
         # 1) MLFLOW.MLFLOW_TRACKING_URI
