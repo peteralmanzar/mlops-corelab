@@ -94,6 +94,15 @@ def perform_eda(**context):
     try:
         logger.start_run(run_name=run_name, tags=tags)
         
+        # Log dataset version using MLflow dataset tracking
+        logger.log_dataset(
+            df=df,
+            source=raw_path,
+            name="raw_data",
+            context="raw",
+            targets=",".join(config.MODEL.get("LABEL_COLUMNS", ["target"]))
+        )
+        
         # Log dataset information (columns, dtypes, null counts, etc.)
         dataset_info = logger.log_dataset_info(df, dataset_name="raw_data")
         
@@ -246,6 +255,26 @@ def split_data(**context):
         
         print(f"Train set: {train_df.shape} saved to {train_path}")
         print(f"Test set: {test_df.shape} saved to {test_path}")
+        
+        # Log datasets to MLflow for versioning
+        mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
+        mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+        logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
+        
+        run_name = f"Data_Split_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id}
+        
+        try:
+            logger.start_run(run_name=run_name, tags=tags)
+            logger.log_dataset(train_df, source=train_path, name="train_split", context="training", targets=",".join(label_cols))
+            logger.log_dataset(test_df, source=test_path, name="test_split", context="test", targets=",".join(label_cols))
+            logger.log_params({"split_type": "simple", "test_size": test_size, "stratify_column": str(stratify_col)})
+            logger.log_metrics({"train_rows": len(train_df), "test_rows": len(test_df)})
+            logger.end_run(status="FINISHED")
+        except Exception as e:
+            print(f"Warning: Failed to log datasets to MLflow: {e}")
+            if logger.get_run_id():
+                logger.end_run(status="FAILED")
         
         # Push metadata to XCom
         context['ti'].xcom_push(key='split_type', value='simple')

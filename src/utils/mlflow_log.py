@@ -7,11 +7,14 @@ and artifacts for data exploration and model training tasks.
 """
 
 import mlflow
+import mlflow.sklearn
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List, Union
 import json
 from pathlib import Path
+from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator
 
 
 class MLFlowLogger:
@@ -232,6 +235,110 @@ class MLFlowLogger:
         mlflow.log_text(text, artifact_file)
         print(f"Logged text artifact: {artifact_file}")
     
+    def log_sklearn_pipeline(self, pipeline: Pipeline, artifact_path: str = "pipeline", 
+                             registered_model_name: Optional[str] = None,
+                             signature=None, input_example: Optional[pd.DataFrame] = None) -> None:
+        """
+        Log a scikit-learn Pipeline to MLflow with type safety.
+        
+        Args:
+            pipeline: Scikit-learn Pipeline object
+            artifact_path: Path within the artifact URI to save the pipeline
+            registered_model_name: Optional name for model registration
+            signature: Optional MLflow model signature
+            input_example: Optional pandas DataFrame showing example input
+        
+        Raises:
+            RuntimeError: If no active MLflow run
+            TypeError: If pipeline is not a sklearn Pipeline instance
+        """
+        if mlflow.active_run() is None:
+            raise RuntimeError("No active MLflow run. Call start_run() first.")
+        
+        if not isinstance(pipeline, Pipeline):
+            raise TypeError(f"Expected sklearn.pipeline.Pipeline, got {type(pipeline).__name__}")
+        
+        mlflow.sklearn.log_model(
+            sk_model=pipeline,
+            artifact_path=artifact_path,
+            registered_model_name=registered_model_name,
+            signature=signature,
+            input_example=input_example
+        )
+        print(f"Logged sklearn Pipeline to artifact path: {artifact_path}")
+        print(f"  Pipeline steps: {[step[0] for step in pipeline.steps]}")
+        if registered_model_name:
+            print(f"  Registered as: {registered_model_name}")
+    
+    def log_sklearn_model(self, model: BaseEstimator, artifact_path: str = "model", 
+                          registered_model_name: Optional[str] = None,
+                          signature=None, input_example: Optional[pd.DataFrame] = None) -> None:
+        """
+        Log a scikit-learn model (classifier/regressor) to MLflow with type safety.
+        
+        Args:
+            model: Scikit-learn estimator/model object (e.g., RandomForest, LogisticRegression)
+            artifact_path: Path within the artifact URI to save the model
+            registered_model_name: Optional name for model registration
+            signature: Optional MLflow model signature
+            input_example: Optional pandas DataFrame showing example input
+        
+        Raises:
+            RuntimeError: If no active MLflow run
+            TypeError: If model is not a sklearn estimator
+        """
+        if mlflow.active_run() is None:
+            raise RuntimeError("No active MLflow run. Call start_run() first.")
+        
+        if not isinstance(model, BaseEstimator):
+            raise TypeError(f"Expected sklearn BaseEstimator, got {type(model).__name__}")
+        
+        mlflow.sklearn.log_model(
+            sk_model=model,
+            artifact_path=artifact_path,
+            registered_model_name=registered_model_name,
+            signature=signature,
+            input_example=input_example
+        )
+        print(f"Logged sklearn model to artifact path: {artifact_path}")
+        print(f"  Model type: {type(model).__name__}")
+        if registered_model_name:
+            print(f"  Registered as: {registered_model_name}")
+    
+    def log_dataset(self, df: pd.DataFrame, source: str, name: str, 
+                    context: str = "training", targets: Optional[str] = None):
+        """
+        Log a pandas DataFrame as a versioned MLflow dataset.
+        
+        Args:
+            df: Pandas DataFrame to log
+            source: Source location of the data (file path, URL, etc.)
+            name: Name for the dataset
+            context: Context in which dataset is used (e.g., 'training', 'validation', 'test')
+            targets: Optional column name(s) for target variable(s)
+        
+        Returns:
+            Dataset object with version information
+        """
+        if mlflow.active_run() is None:
+            raise RuntimeError("No active MLflow run. Call start_run() first.")
+        
+        # Create MLflow dataset from pandas DataFrame
+        dataset = mlflow.data.from_pandas(
+            df,
+            source=source,
+            name=name,
+            targets=targets
+        )
+        
+        # Log the dataset with context
+        mlflow.log_input(dataset, context=context)
+        
+        print(f"Logged dataset '{name}' (context: {context}, rows: {len(df)}, cols: {len(df.columns)})")
+        print(f"  Dataset digest: {dataset.digest if hasattr(dataset, 'digest') else 'N/A'}")
+        
+        return dataset
+    
     def end_run(self, status: str = "FINISHED"):
         """
         End the current MLflow run.
@@ -265,3 +372,70 @@ class MLFlowLogger:
             Experiment ID
         """
         return self.experiment_id
+    
+    @staticmethod
+    def load_sklearn_pipeline(model_uri: str) -> Pipeline:
+        """
+        Load a scikit-learn Pipeline from MLflow with type safety.
+        
+        Args:
+            model_uri: MLflow model URI (e.g., 'runs:/<run_id>/pipeline' or 'models:/name/version')
+        
+        Returns:
+            Loaded sklearn Pipeline object
+        
+        Raises:
+            TypeError: If loaded object is not a Pipeline
+        
+        Examples:
+            >>> pipeline = MLFlowLogger.load_sklearn_pipeline("runs:/abc123/preprocessing_pipeline")
+            >>> pipeline = MLFlowLogger.load_sklearn_pipeline("models:/my_pipeline/Production")
+        """
+        loaded_model = mlflow.sklearn.load_model(model_uri)
+        
+        if not isinstance(loaded_model, Pipeline):
+            raise TypeError(
+                f"Expected Pipeline from '{model_uri}', got {type(loaded_model).__name__}. "
+                f"Use load_sklearn_model() for non-pipeline models."
+            )
+        
+        print(f"Loaded sklearn Pipeline from: {model_uri}")
+        print(f"  Pipeline steps: {[step[0] for step in loaded_model.steps]}")
+        
+        return loaded_model
+    
+    @staticmethod
+    def load_sklearn_model(model_uri: str) -> BaseEstimator:
+        """
+        Load a scikit-learn model (classifier/regressor) from MLflow with type safety.
+        
+        Args:
+            model_uri: MLflow model URI (e.g., 'runs:/<run_id>/model' or 'models:/name/version')
+        
+        Returns:
+            Loaded sklearn estimator/model object
+        
+        Raises:
+            TypeError: If loaded object is a Pipeline (use load_sklearn_pipeline instead)
+        
+        Examples:
+            >>> model = MLFlowLogger.load_sklearn_model("runs:/abc123/trained_model")
+            >>> model = MLFlowLogger.load_sklearn_model("models:/my_classifier/Production")
+        """
+        loaded_model = mlflow.sklearn.load_model(model_uri)
+        
+        if isinstance(loaded_model, Pipeline):
+            raise TypeError(
+                f"Loaded object from '{model_uri}' is a Pipeline. "
+                f"Use load_sklearn_pipeline() for Pipeline objects."
+            )
+        
+        if not isinstance(loaded_model, BaseEstimator):
+            raise TypeError(
+                f"Expected sklearn BaseEstimator from '{model_uri}', got {type(loaded_model).__name__}"
+            )
+        
+        print(f"Loaded sklearn model from: {model_uri}")
+        print(f"  Model type: {type(loaded_model).__name__}")
+        
+        return loaded_model
