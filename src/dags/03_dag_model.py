@@ -139,17 +139,49 @@ def metadata_load(**context):
                 'test_path': os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
             })
     
-    # Pull pipeline_run_id from first DAG for traceability
-    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='raw_data_load', key='pipeline_run_id', include_prior_dates=True)
-    pipeline_run_id = pipeline_run_id_list[0] if isinstance(pipeline_run_id_list, list) and pipeline_run_id_list else None
+    # Pull pipeline_run_id from second DAG for traceability (it was propagated from DAG 01)
+    split_metadata_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='split_metadata', include_prior_dates=True)
+    print(f"DEBUG: split_metadata_list = {split_metadata_list}, type = {type(split_metadata_list)}")
+    
+    # Extract pipeline_run_id and pipeline_step from split_metadata
+    pipeline_run_id = None
+    pipeline_step = 0
+    
+    if split_metadata_list is not None:
+        # Handle list of metadata dicts - take the LAST (most recent) one
+        if isinstance(split_metadata_list, list) and len(split_metadata_list) > 0:
+            metadata = split_metadata_list[-1]  # Take last (most recent) instead of first
+            if isinstance(metadata, dict):
+                pipeline_run_id = metadata.get('pipeline_run_id')
+                pipeline_step = metadata.get('pipeline_step', 0)
+        # Handle single metadata dict
+        elif isinstance(split_metadata_list, dict):
+            pipeline_run_id = split_metadata_list.get('pipeline_run_id')
+            pipeline_step = split_metadata_list.get('pipeline_step', 0)
+    
+    print(f"DEBUG: Extracted pipeline_run_id = {pipeline_run_id}, pipeline_step = {pipeline_step}")
+    
+    # Pull the latest step from preprocessed_eda task (last MLflow task in DAG 02)
+    step_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='preprocessed_eda', key='pipeline_step', include_prior_dates=True)
+    print(f"DEBUG: step_list from preprocessed_eda = {step_list}, type = {type(step_list)}")
+    
+    if step_list is not None:
+        if isinstance(step_list, list) and len(step_list) > 0:
+            pipeline_step = step_list[-1] if step_list[-1] is not None else pipeline_step  # Take last
+        elif isinstance(step_list, int):
+            pipeline_step = step_list
     
     if pipeline_run_id:
         print(f"Pipeline Run ID: {pipeline_run_id}")
+        print(f"Current Pipeline Step: {pipeline_step}")
     else:
-        print("Warning: No pipeline_run_id found from 01_dag_data")
+        print("ERROR: No pipeline_run_id found from 02_dag_preprocess!")
+        print("This usually means DAG 02 did not run successfully or XCom data is missing.")
+        raise ValueError("pipeline_run_id not found from 02_dag_preprocess. Ensure 02_dag_preprocess completed successfully.")
     
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
+    context['ti'].xcom_push(key='pipeline_step', value=pipeline_step)
     context['ti'].xcom_push(key='split_type', value=split_type)
     context['ti'].xcom_push(key='folds_info', value=folds_info)
     context['ti'].xcom_push(key='num_folds', value=len(folds_info))
@@ -185,10 +217,13 @@ def model_build(**context):
     Build model configuration by auto-detecting task type and preparing model template parameters.
     Reads first fold to infer input shape and task type.
     """
+    print("=== MODEL BUILD STARTING ===")
     ti = context['ti']
     
     # Get fold information
+    print("Pulling folds_info from metadata_load...")
     folds_info = ti.xcom_pull(task_ids='metadata_load', key='folds_info')
+    print(f"DEBUG: folds_info = {folds_info}")
     
     if not folds_info:
         raise ValueError("No folds information found from metadata_load task")
@@ -218,9 +253,12 @@ def model_build(**context):
     print(f"Label columns: {label_cols}")
     
     # Auto-detect task type
+    print("Auto-detecting task type...")
     task_type, num_classes = detect_task_type(y, label_cols)
+    print(f"Task type detected: {task_type}, num_classes: {num_classes}")
     
     # Get optimizer from config
+    print("Loading optimizer configuration...")
     optimizer_str = config.MODEL.get("OPTIMIZER", "adam").lower()
     optimizer_map = {
         "adam": Optimizer.ADAM,
@@ -343,12 +381,15 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
     context = get_current_context()
     ti = context['ti']
     
-    # Get pipeline run ID for traceability
+    # Get pipeline run ID and step for traceability
     pipeline_run_id = ti.xcom_pull(task_ids='metadata_load', key='pipeline_run_id')
+    current_step = ti.xcom_pull(task_ids='metadata_load', key='pipeline_step') or 0
+    current_step += 1
+    
     dag_run_id = context.get('dag_run').run_id
     
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_Model_Train_Fold_{fold_id}"
+    run_name = f"{pipeline_run_id}_{current_step:02d}_Model_Train_Fold_{fold_id}"
     tags = {
         "task_type": "model_training",
         "model_type": task_type,
@@ -356,7 +397,8 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id if pipeline_run_id else 'unknown'
+        "pipeline_run_id": pipeline_run_id if pipeline_run_id else 'unknown',
+        "pipeline_step": str(current_step)
     }
     
     try:

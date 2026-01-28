@@ -84,15 +84,43 @@ def metadata_load(**context):
             metadata['ts_gap'] = ts_gap_list[0] if isinstance(ts_gap_list, list) else ts_gap_list
             metadata['ts_expanding'] = ts_expanding_list[0] if isinstance(ts_expanding_list, list) else ts_expanding_list
     
-    # Pull pipeline_run_id from first DAG for traceability
-    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='raw_data_load', key='pipeline_run_id', include_prior_dates=True)
-    pipeline_run_id = pipeline_run_id_list[0] if isinstance(pipeline_run_id_list, list) and pipeline_run_id_list else None
+    # Pull pipeline_run_id from first DAG for traceability (from data_split task which is the outlet)
+    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='pipeline_run_id', include_prior_dates=True)
+    print(f"DEBUG: pipeline_run_id_list = {pipeline_run_id_list}, type = {type(pipeline_run_id_list)}")
+    
+    if pipeline_run_id_list is not None:
+        if isinstance(pipeline_run_id_list, list) and len(pipeline_run_id_list) > 0:
+            pipeline_run_id = pipeline_run_id_list[-1]  # Take last (most recent)
+        elif isinstance(pipeline_run_id_list, str):
+            pipeline_run_id = pipeline_run_id_list
+        else:
+            pipeline_run_id = None
+    else:
+        pipeline_run_id = None
+    
+    # Pull the latest step counter from DAG 01
+    pipeline_step_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='pipeline_step', include_prior_dates=True)
+    print(f"DEBUG: pipeline_step_list = {pipeline_step_list}, type = {type(pipeline_step_list)}")
+    
+    if pipeline_step_list is not None:
+        if isinstance(pipeline_step_list, list) and len(pipeline_step_list) > 0:
+            pipeline_step = pipeline_step_list[-1]  # Take last (most recent)
+        elif isinstance(pipeline_step_list, int):
+            pipeline_step = pipeline_step_list
+        else:
+            pipeline_step = 0
+    else:
+        pipeline_step = 0
     
     if pipeline_run_id:
         print(f"Pipeline Run ID: {pipeline_run_id}")
+        print(f"Current Pipeline Step from DAG 01: {pipeline_step}")
         metadata['pipeline_run_id'] = pipeline_run_id
+        metadata['pipeline_step'] = pipeline_step
     else:
-        print("Warning: No pipeline_run_id found from 01_dag_data")
+        print("ERROR: No pipeline_run_id found from 01_dag_data!")
+        print("This usually means DAG 01 did not run successfully or XCom data is missing.")
+        raise ValueError("pipeline_run_id not found from 01_dag_data. Ensure 01_dag_data completed successfully.")
     
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='split_metadata', value=metadata)
@@ -163,10 +191,16 @@ def pipeline_build(**context):
     
     # Get pipeline run ID for traceability
     pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
+    
+    # Get and increment step counter
+    current_step = metadata.get('pipeline_step', 0)
+    current_step += 1
+    context['ti'].xcom_push(key='pipeline_step', value=current_step)
+    
     dag_run_id = context.get('dag_run').run_id
     
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_Pipeline_Build"
+    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_Pipeline_Build"
     tags = {
         "task_type": "preprocessing_pipeline",
         "split_type": metadata['split_type'],
@@ -174,7 +208,8 @@ def pipeline_build(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_step": str(current_step)
     }
     
     try:
@@ -425,10 +460,17 @@ def validate_transformed_data(**context):
     
     # Get pipeline run ID for traceability
     pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
+    
+    # Get and increment step counter
+    ti = context['ti']
+    current_step = ti.xcom_pull(task_ids='pipeline_build', key='pipeline_step') or 0
+    current_step += 1
+    ti.xcom_push(key='pipeline_step', value=current_step)
+    
     dag_run_id = context.get('dag_run').run_id
     
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_Validation"
+    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_Validation"
     tags = {
         "task_type": "validation",
         "split_type": metadata['split_type'],
@@ -436,7 +478,8 @@ def validate_transformed_data(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_step": str(current_step)
     }
     
     validation_passed = True
@@ -620,10 +663,17 @@ def preprocessed_eda(**context):
     
     # Get pipeline run ID for traceability
     pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
+    
+    # Get and increment step counter
+    ti = context['ti']
+    current_step = ti.xcom_pull(task_ids='validate_data', key='pipeline_step') or 0
+    current_step += 1
+    ti.xcom_push(key='pipeline_step', value=current_step)
+    
     dag_run_id = context.get('dag_run').run_id
     
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_EDA_Preprocessed"
+    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_EDA"
     tags = {
         "task_type": "eda",
         "data_source": "preprocessed",
@@ -632,7 +682,8 @@ def preprocessed_eda(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_step": str(current_step)
     }
     
     try:
