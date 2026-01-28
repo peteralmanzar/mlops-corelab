@@ -84,10 +84,20 @@ def metadata_load(**context):
             metadata['ts_gap'] = ts_gap_list[0] if isinstance(ts_gap_list, list) else ts_gap_list
             metadata['ts_expanding'] = ts_expanding_list[0] if isinstance(ts_expanding_list, list) else ts_expanding_list
     
+    # Pull pipeline_run_id from first DAG for traceability
+    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='raw_data_load', key='pipeline_run_id', include_prior_dates=True)
+    pipeline_run_id = pipeline_run_id_list[0] if isinstance(pipeline_run_id_list, list) and pipeline_run_id_list else None
+    
+    if pipeline_run_id:
+        print(f"Pipeline Run ID: {pipeline_run_id}")
+        metadata['pipeline_run_id'] = pipeline_run_id
+    else:
+        print("Warning: No pipeline_run_id found from 01_dag_data")
+    
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='split_metadata', value=metadata)
     
-    return f"Loaded {split_type} split metadata"
+    return f"Loaded {split_type} split metadata (Pipeline ID: {pipeline_run_id})"  
 
 
 def pipeline_build(**context):
@@ -151,16 +161,20 @@ def pipeline_build(**context):
         experiment_name=mlflow_experiment_name
     )
     
-    # Start MLflow run
+    # Get pipeline run ID for traceability
+    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
     dag_run_id = context.get('dag_run').run_id
-    run_name = f"{dag_run_id}_Pipeline_Build"
+    
+    # Start MLflow run
+    run_name = f"{pipeline_run_id}_Pipeline_Build"
     tags = {
         "task_type": "preprocessing_pipeline",
         "split_type": metadata['split_type'],
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
-        "airflow_dag_run_id": dag_run_id
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_run_id
     }
     
     try:
@@ -358,6 +372,224 @@ def transform_prepare(**context):
     return splits_to_process
 
 
+def validate_transformed_data(**context):
+    """
+    Validate transformed data for strict quality requirements:
+    - Zero null values allowed
+    - All feature columns must be numeric
+    
+    Raises ValueError if validation fails.
+    Logs validation results to MLflow.
+    """
+    ti = context['ti']
+    metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
+    features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
+    label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+    
+    print("Starting data validation...")
+    print(f"Validation Rules: Zero nulls, All numeric features")
+    
+    # Collect all transformed file paths
+    files_to_validate = []
+    
+    if metadata['split_type'] == 'simple':
+        files_to_validate.append({
+            'name': 'train',
+            'path': os.path.join(features_path, "train_transformed.csv")
+        })
+        files_to_validate.append({
+            'name': 'test',
+            'path': os.path.join(features_path, "test_transformed.csv")
+        })
+    else:
+        # Get number of folds
+        num_folds = metadata.get('num_folds', 5)
+        for fold_idx in range(num_folds):
+            files_to_validate.append({
+                'name': f'train_fold_{fold_idx}',
+                'path': os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv")
+            })
+            files_to_validate.append({
+                'name': f'test_fold_{fold_idx}',
+                'path': os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
+            })
+    
+    # Initialize MLflow logger
+    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    
+    logger = MLFlowLogger(
+        tracking_uri=mlflow_tracking_uri,
+        experiment_name=mlflow_experiment_name
+    )
+    
+    # Get pipeline run ID for traceability
+    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
+    dag_run_id = context.get('dag_run').run_id
+    
+    # Start MLflow run
+    run_name = f"{pipeline_run_id}_Validation"
+    tags = {
+        "task_type": "validation",
+        "split_type": metadata['split_type'],
+        "dag_id": context.get('dag').dag_id,
+        "task_id": context.get('task').task_id,
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_run_id
+    }
+    
+    validation_passed = True
+    validation_errors = []
+    validation_warnings = []
+    total_null_count = 0
+    total_non_numeric_features = 0
+    files_validated = 0
+    
+    try:
+        logger.start_run(run_name=run_name, tags=tags)
+        
+        # Validate each file
+        for file_info in files_to_validate:
+            file_name = file_info['name']
+            file_path = file_info['path']
+            
+            if not os.path.exists(file_path):
+                error_msg = f"File not found: {file_path}"
+                validation_errors.append(error_msg)
+                print(f"ERROR: {error_msg}")
+                validation_passed = False
+                continue
+            
+            print(f"\nValidating: {file_name} ({file_path})")
+            df = pd.read_csv(file_path)
+            
+            # Separate features from labels
+            feature_cols = [col for col in df.columns if col not in label_cols]
+            
+            # Check 1: No null values
+            null_count = df.isnull().sum().sum()
+            if null_count > 0:
+                null_details = df.isnull().sum()[df.isnull().sum() > 0].to_dict()
+                error_msg = f"{file_name}: Found {null_count} null values in columns: {null_details}"
+                validation_errors.append(error_msg)
+                print(f"  ❌ NULL CHECK FAILED: {null_count} null values found")
+                print(f"     Columns with nulls: {null_details}")
+                validation_passed = False
+                total_null_count += null_count
+            else:
+                print(f"  ✓ NULL CHECK PASSED: Zero null values")
+            
+            # Check 2: All feature columns are numeric
+            non_numeric_features = df[feature_cols].select_dtypes(exclude=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+            if len(non_numeric_features) > 0:
+                non_numeric_dtypes = {col: str(df[col].dtype) for col in non_numeric_features}
+                error_msg = f"{file_name}: Found {len(non_numeric_features)} non-numeric feature columns: {non_numeric_dtypes}"
+                validation_errors.append(error_msg)
+                print(f"  ❌ NUMERIC CHECK FAILED: {len(non_numeric_features)} non-numeric features")
+                print(f"     Non-numeric features: {non_numeric_dtypes}")
+                validation_passed = False
+                total_non_numeric_features += len(non_numeric_features)
+            else:
+                print(f"  ✓ NUMERIC CHECK PASSED: All {len(feature_cols)} features are numeric")
+            
+            # Log per-file metrics
+            logger.log_metrics({
+                f"{file_name}_null_count": int(null_count),
+                f"{file_name}_non_numeric_count": len(non_numeric_features),
+                f"{file_name}_total_rows": len(df),
+                f"{file_name}_total_features": len(feature_cols)
+            })
+            
+            files_validated += 1
+        
+        # Log aggregate metrics
+        logger.log_metrics({
+            "validation_passed": 1 if validation_passed else 0,
+            "total_null_count": total_null_count,
+            "total_non_numeric_features": total_non_numeric_features,
+            "files_validated": files_validated,
+            "validation_errors": len(validation_errors),
+            "validation_warnings": len(validation_warnings)
+        })
+        
+        # Log validation parameters
+        logger.log_params({
+            "validation_rule_nulls": "zero_allowed",
+            "validation_rule_types": "all_numeric_features",
+            "split_type": metadata['split_type'],
+            "files_checked": files_validated
+        })
+        
+        # Create validation report
+        report_lines = [
+            "=" * 60,
+            "DATA VALIDATION REPORT",
+            "=" * 60,
+            f"Validation Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Split Type: {metadata['split_type']}",
+            f"Files Validated: {files_validated}",
+            "",
+            "VALIDATION RULES:",
+            "  1. Zero null values allowed",
+            "  2. All feature columns must be numeric (int64, float64, int32, float32)",
+            "",
+            f"VALIDATION STATUS: {'✓ PASSED' if validation_passed else '✗ FAILED'}",
+            "",
+            "SUMMARY:",
+            f"  - Total Null Values: {total_null_count}",
+            f"  - Non-Numeric Features: {total_non_numeric_features}",
+            f"  - Errors: {len(validation_errors)}",
+            f"  - Warnings: {len(validation_warnings)}",
+            ""
+        ]
+        
+        if validation_errors:
+            report_lines.append("ERRORS:")
+            for i, error in enumerate(validation_errors, 1):
+                report_lines.append(f"  {i}. {error}")
+            report_lines.append("")
+        
+        if validation_warnings:
+            report_lines.append("WARNINGS:")
+            for i, warning in enumerate(validation_warnings, 1):
+                report_lines.append(f"  {i}. {warning}")
+            report_lines.append("")
+        
+        report_lines.append("=" * 60)
+        report_text = "\n".join(report_lines)
+        
+        # Log report
+        logger.log_text(report_text, "validation_report.txt")
+        print("\n" + report_text)
+        
+        # End MLflow run
+        logger.end_run(status="FINISHED" if validation_passed else "FAILED")
+        
+        # Push validation results to XCom
+        context['ti'].xcom_push(key='validation_passed', value=validation_passed)
+        context['ti'].xcom_push(key='validation_errors', value=validation_errors)
+        context['ti'].xcom_push(key='mlflow_run_id', value=logger.get_run_id())
+        
+        # Raise exception if validation failed
+        if not validation_passed:
+            raise ValueError(
+                f"Data validation FAILED with {len(validation_errors)} errors. "
+                f"Total nulls: {total_null_count}, Non-numeric features: {total_non_numeric_features}. "
+                f"See MLflow run {logger.get_run_id()} for details."
+            )
+        
+        return f"Validation PASSED: {files_validated} files validated successfully (MLflow Run: {logger.get_run_id()})"
+        
+    except ValueError:
+        # Re-raise validation errors
+        raise
+    except Exception as e:
+        print(f"Error during validation: {e}")
+        logger.end_run(status="FAILED")
+        raise
+
+
 def preprocessed_eda(**context):
     """
     Perform EDA on preprocessed data and log to MLflow.
@@ -386,9 +618,12 @@ def preprocessed_eda(**context):
         experiment_name=mlflow_experiment_name
     )
     
-    # Start MLflow run
+    # Get pipeline run ID for traceability
+    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
     dag_run_id = context.get('dag_run').run_id
-    run_name = f"{dag_run_id}_EDA_Preprocessed"
+    
+    # Start MLflow run
+    run_name = f"{pipeline_run_id}_EDA_Preprocessed"
     tags = {
         "task_type": "eda",
         "data_source": "preprocessed",
@@ -396,7 +631,8 @@ def preprocessed_eda(**context):
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
-        "airflow_dag_run_id": dag_run_id
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_run_id
     }
     
     try:
@@ -586,11 +822,17 @@ with DAG(
     )
     split_transform_tasks.operator.outlets = [TRANSFORMED_DATA_ASSET]  # This task produces the transformed data
     
-    # Task 5: Perform EDA on preprocessed data
+    # Task 5: Validate transformed data
+    validate_data_task = PythonOperator(
+        task_id="validate_data",
+        python_callable=validate_transformed_data,
+    )
+    
+    # Task 6: Perform EDA on preprocessed data
     preprocessed_eda_task = PythonOperator(
         task_id="preprocessed_eda",
         python_callable=preprocessed_eda,
     )
     
     # Task dependencies
-    metadata_load_task >> pipeline_build_task >> transform_prepare_task >> split_transform_tasks >> preprocessed_eda_task
+    metadata_load_task >> pipeline_build_task >> transform_prepare_task >> split_transform_tasks >> validate_data_task >> preprocessed_eda_task

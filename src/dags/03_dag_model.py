@@ -139,7 +139,17 @@ def metadata_load(**context):
                 'test_path': os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
             })
     
+    # Pull pipeline_run_id from first DAG for traceability
+    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='raw_data_load', key='pipeline_run_id', include_prior_dates=True)
+    pipeline_run_id = pipeline_run_id_list[0] if isinstance(pipeline_run_id_list, list) and pipeline_run_id_list else None
+    
+    if pipeline_run_id:
+        print(f"Pipeline Run ID: {pipeline_run_id}")
+    else:
+        print("Warning: No pipeline_run_id found from 01_dag_data")
+    
     # Push metadata for downstream tasks
+    context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
     context['ti'].xcom_push(key='split_type', value=split_type)
     context['ti'].xcom_push(key='folds_info', value=folds_info)
     context['ti'].xcom_push(key='num_folds', value=len(folds_info))
@@ -331,17 +341,22 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
     
     # Get Airflow context for TaskFlow function
     context = get_current_context()
+    ti = context['ti']
+    
+    # Get pipeline run ID for traceability
+    pipeline_run_id = ti.xcom_pull(task_ids='metadata_load', key='pipeline_run_id')
     dag_run_id = context.get('dag_run').run_id
     
     # Start MLflow run
-    run_name = f"{dag_run_id}_Model_Train_Fold_{fold_id}"
+    run_name = f"{pipeline_run_id}_Model_Train_Fold_{fold_id}"
     tags = {
         "task_type": "model_training",
         "model_type": task_type,
         "fold_id": str(fold_id),
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
-        "airflow_dag_run_id": dag_run_id
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_run_id if pipeline_run_id else 'unknown'
     }
     
     try:

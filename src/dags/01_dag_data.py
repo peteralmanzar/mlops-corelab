@@ -11,6 +11,7 @@ This DAG handles comprehensive data operations for the ML pipeline:
   * Time Series split with gap and expanding/sliding window support
 """
 from datetime import datetime
+import uuid
 
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
@@ -38,7 +39,14 @@ def load_raw_data(**context):
     """
     Load raw data from configured path into a pandas DataFrame.
     Stores the DataFrame shape in XCom for validation.
+    Generates a pipeline-wide GUID for traceability across all DAGs.
     """
+    # Generate pipeline-wide GUID for traceability (date-based for ordering)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    unique_id = str(uuid.uuid4())[:8]  # Short UUID for uniqueness
+    pipeline_run_id = f"{timestamp}_{unique_id}"
+    print(f"Generated Pipeline Run ID: {pipeline_run_id}")
+    
     raw_path = config.DATA.get("RAW_PATH_FILE")
     
     print(f"Loading data from: {raw_path}")
@@ -49,11 +57,12 @@ def load_raw_data(**context):
     print(f"\nFirst few rows:\n{df.head()}")
     
     # Push metadata to XCom for downstream tasks
+    context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
     context['ti'].xcom_push(key='data_shape', value=df.shape)
     context['ti'].xcom_push(key='data_columns', value=df.columns.tolist())
     context['ti'].xcom_push(key='raw_data_path', value=raw_path)
     
-    return f"Successfully loaded {df.shape[0]} rows and {df.shape[1]} columns"
+    return f"Successfully loaded {df.shape[0]} rows and {df.shape[1]} columns (Pipeline ID: {pipeline_run_id})"
 
 
 def perform_eda(**context):
@@ -81,16 +90,20 @@ def perform_eda(**context):
         experiment_name=mlflow_experiment_name
     )
     
-    # Start MLflow run
+    # Get pipeline run ID for traceability
+    ti = context['ti']
+    pipeline_run_id = ti.xcom_pull(task_ids='raw_data_load', key='pipeline_run_id')
     dag_run_id = context.get('dag_run').run_id
-    run_name = f"{dag_run_id}_EDA"
+    
+    run_name = f"{pipeline_run_id}_EDA"
     tags = {
         "task_type": "eda",
         "data_source": "raw",
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
-        "airflow_dag_run_id": dag_run_id
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_run_id
     }
     
     try:
@@ -263,9 +276,13 @@ def split_data(**context):
         mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
         logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
         
+        # Get pipeline run ID for traceability
+        ti = context['ti']
+        pipeline_run_id = ti.xcom_pull(task_ids='raw_data_load', key='pipeline_run_id')
         dag_run_id = context.get('dag_run').run_id
-        run_name = f"{dag_run_id}_Data_Split"
-        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id, "airflow_dag_run_id": dag_run_id}
+        
+        run_name = f"{pipeline_run_id}_Data_Split"
+        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id, "airflow_dag_run_id": dag_run_id, "pipeline_run_id": pipeline_run_id}
         
         try:
             logger.start_run(run_name=run_name, tags=tags)

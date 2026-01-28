@@ -78,6 +78,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-./src}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./src}/utils:/opt/airflow/utils
     - ${AIRFLOW_PROJ_DIR:-./src}/config.json:/opt/airflow/config.json
+    - ${AIRFLOW_PROJ_DIR:-./src}/config.model.json:/opt/airflow/config.model.json
     - ${AIRFLOW_PROJ_DIR:-./logs/airflow_logs}:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-./infrastructure/airflow/config}:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-./infrastructure/airflow/scripts}:/opt/airflow/scripts
