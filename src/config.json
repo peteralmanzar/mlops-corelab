@@ -50,6 +50,11 @@
   "MODEL": {
     "ARTIFACTS_PATH": "/mlflow/artifacts",
     "LABEL_COLUMNS": ["target"],
+    "EPOCHS": 50,
+    "BATCH_SIZE": 32,
+    "OPTIMIZER": "adam",
+    "EARLY_STOPPING_PATIENCE": 10,
+    "VALIDATION_SPLIT": 0.2,
     "PARAMS": {
       "n_estimators": 100,
       "max_depth": 10,

@@ -439,3 +439,111 @@ class MLFlowLogger:
         print(f"  Model type: {type(loaded_model).__name__}")
         
         return loaded_model
+    
+    def log_keras_model(
+        self, 
+        model, 
+        artifact_path: str = "model",
+        signature=None,
+        input_example=None,
+        **kwargs
+    ):
+        """
+        Log a Keras/TensorFlow model to the current MLflow run.
+        
+        Args:
+            model: Trained Keras model to log
+            artifact_path: Path within the run to save the model (default: "model")
+            signature: MLflow ModelSignature (optional, recommended for inference)
+            input_example: Example input for model inference documentation
+            **kwargs: Additional arguments passed to mlflow.keras.log_model
+        
+        Returns:
+            None
+            
+        Raises:
+            RuntimeError: If no active MLflow run exists
+            
+        Examples:
+            >>> logger.start_run(run_name="train_lstm")
+            >>> logger.log_keras_model(model, "trained_model", signature=signature)
+            >>> logger.end_run()
+        """
+        if mlflow.active_run() is None:
+            raise RuntimeError("No active MLflow run. Call start_run() first.")
+        
+        import mlflow.keras
+        
+        mlflow.keras.log_model(
+            model=model,
+            artifact_path=artifact_path,
+            signature=signature,
+            input_example=input_example,
+            **kwargs
+        )
+        
+        print(f"Logged Keras model to MLflow: {artifact_path}")
+        print(f"  Run ID: {self.run_id}")
+        print(f"  Model type: {type(model).__name__}")
+    
+    def register_model(
+        self, 
+        model_uri: str, 
+        model_name: str,
+        tags: Optional[Dict[str, Any]] = None,
+        await_creation: bool = True
+    ):
+        """
+        Register a model to the MLflow Model Registry.
+        
+        Args:
+            model_uri: URI of the model to register (e.g., 'runs:/<run_id>/model')
+            model_name: Name to register the model under in the registry
+            tags: Optional tags to apply to the registered model version
+            await_creation: Whether to wait for model version creation (default: True)
+        
+        Returns:
+            ModelVersion object from MLflow
+            
+        Examples:
+            >>> run_id = logger.get_run_id()
+            >>> model_uri = f"runs:/{run_id}/model"
+            >>> logger.register_model(model_uri, "ml_pipeline_model", tags={"task": "regression"})
+        """
+        result = mlflow.register_model(
+            model_uri=model_uri,
+            name=model_name,
+            tags=tags,
+            await_registration_for=30 if await_creation else 0
+        )
+        
+        print(f"Registered model to MLflow Registry:")
+        print(f"  Model Name: {model_name}")
+        print(f"  Version: {result.version}")
+        print(f"  Model URI: {model_uri}")
+        
+        return result
+    
+    @staticmethod
+    def load_keras_model(model_uri: str):
+        """
+        Load a Keras/TensorFlow model from MLflow.
+        
+        Args:
+            model_uri: MLflow model URI (e.g., 'runs:/<run_id>/model' or 'models:/name/version')
+        
+        Returns:
+            Loaded Keras model object
+        
+        Examples:
+            >>> model = MLFlowLogger.load_keras_model("runs:/abc123/trained_model")
+            >>> model = MLFlowLogger.load_keras_model("models:/ml_pipeline_model/Production")
+        """
+        import mlflow.keras
+        
+        loaded_model = mlflow.keras.load_model(model_uri)
+        
+        print(f"Loaded Keras model from: {model_uri}")
+        print(f"  Model type: {type(loaded_model).__name__}")
+        
+        return loaded_model
