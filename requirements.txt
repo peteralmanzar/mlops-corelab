@@ -4,3 +4,4 @@ matplotlib>=3.10.8
 seaborn 
 pandas 
 joblib
+tensorflow>=2.18.0
