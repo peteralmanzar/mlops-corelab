@@ -442,7 +442,6 @@ with DAG(
     raw_data_load = PythonOperator(
         task_id="raw_data_load",
         python_callable=load_raw_data,
-        provide_context=True,
         outlets=[RAW_DATA_ASSET],  # This task produces the raw data asset
     )
     
@@ -450,14 +449,12 @@ with DAG(
     eda_task = PythonOperator(
         task_id="eda_task",
         python_callable=perform_eda,
-        provide_context=True,
     )
     
     # Task 3: Split data
     data_split = PythonOperator(
         task_id="data_split",
         python_callable=split_data,
-        provide_context=True,
         outlets=[TRAIN_TEST_SPLIT_ASSET],  # This task produces the train/test split asset
     )
     

@@ -44,10 +44,13 @@ def metadata_load(**context):
     ti = context['ti']
     
     # Pull metadata from previous DAG run (01_dag_data)
-    split_type = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='split_type')
+    # include_prior_dates=True returns a list, so we take the first (most recent) value
+    split_type_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='split_type', include_prior_dates=True)
     
-    if split_type is None:
+    if split_type_list is None or len(split_type_list) == 0:
         raise ValueError("No split metadata found from 01_dag_data. Ensure 01_dag_data has run successfully.")
+    
+    split_type = split_type_list[0] if isinstance(split_type_list, list) else split_type_list
     
     print(f"Split type detected: {split_type}")
     
@@ -56,20 +59,30 @@ def metadata_load(**context):
     }
     
     if split_type == 'simple':
-        metadata['train_path'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_path')
-        metadata['test_path'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_path')
-        metadata['train_shape'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_shape')
-        metadata['test_shape'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_shape')
+        train_path_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_path', include_prior_dates=True)
+        test_path_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_path', include_prior_dates=True)
+        train_shape_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_shape', include_prior_dates=True)
+        test_shape_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_shape', include_prior_dates=True)
+        
+        metadata['train_path'] = train_path_list[0] if isinstance(train_path_list, list) else train_path_list
+        metadata['test_path'] = test_path_list[0] if isinstance(test_path_list, list) else test_path_list
+        metadata['train_shape'] = train_shape_list[0] if isinstance(train_shape_list, list) else train_shape_list
+        metadata['test_shape'] = test_shape_list[0] if isinstance(test_shape_list, list) else test_shape_list
         print(f"Simple split: train={metadata['train_shape']}, test={metadata['test_shape']}")
         
     elif split_type in ['kfold', 'stratified', 'timeseries']:
-        metadata['num_folds'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='num_folds')
-        metadata['fold_paths'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='fold_paths')
+        num_folds_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='num_folds', include_prior_dates=True)
+        fold_paths_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='fold_paths', include_prior_dates=True)
+        
+        metadata['num_folds'] = num_folds_list[0] if isinstance(num_folds_list, list) else num_folds_list
+        metadata['fold_paths'] = fold_paths_list[0] if isinstance(fold_paths_list, list) else fold_paths_list
         print(f"{split_type} split: {metadata['num_folds']} folds")
         
         if split_type == 'timeseries':
-            metadata['ts_gap'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_gap')
-            metadata['ts_expanding'] = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_expanding')
+            ts_gap_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_gap', include_prior_dates=True)
+            ts_expanding_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_expanding', include_prior_dates=True)
+            metadata['ts_gap'] = ts_gap_list[0] if isinstance(ts_gap_list, list) else ts_gap_list
+            metadata['ts_expanding'] = ts_expanding_list[0] if isinstance(ts_expanding_list, list) else ts_expanding_list
     
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='split_metadata', value=metadata)
@@ -96,6 +109,8 @@ def pipeline_build(**context):
     # Load training data to fit the pipeline
     ti = context['ti']
     metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
+    
+    print(f"Split metadata: {metadata}")
     
     if metadata['split_type'] == 'simple':
         train_path = metadata['train_path']
@@ -226,16 +241,13 @@ def pipeline_build(**context):
 
 
 @task
-def split_transform(split_info: dict, pipeline_path: str, features_path: str, label_cols: list):
+def split_transform(split_info: dict):
     """
     Transform a single train/test split using the pipeline.
     This task is designed for dynamic task mapping (parallel execution).
     
     Args:
-        split_info: Dictionary with 'train', 'test', 'fold' keys
-        pipeline_path: Path to saved pipeline
-        features_path: Output directory for transformed data
-        label_cols: List of label column names
+        split_info: Dictionary with 'train', 'test', 'fold', 'pipeline_path', 'features_path', 'label_cols' keys
     """
     import pandas as pd
     from data_pipeline import load_pipeline
@@ -243,6 +255,9 @@ def split_transform(split_info: dict, pipeline_path: str, features_path: str, la
     fold = split_info.get('fold', 'simple')
     train_path = split_info['train']
     test_path = split_info['test']
+    pipeline_path = split_info['pipeline_path']
+    features_path = split_info['features_path']
+    label_cols = split_info['label_cols']
     
     print(f"Processing fold: {fold}")
     print(f"  Train: {train_path}")
@@ -307,10 +322,11 @@ def split_transform(split_info: dict, pipeline_path: str, features_path: str, la
     }
 
 
+@task
 def transform_prepare(**context):
     """
     Prepare the list of splits to transform in parallel.
-    Returns list of split dictionaries for dynamic task mapping.
+    Returns list of splits for dynamic task mapping.
     """
     ti = context['ti']
     metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
@@ -325,17 +341,17 @@ def transform_prepare(**context):
         splits_to_process.append({
             'fold': 'simple',
             'train': metadata['train_path'],
-            'test': metadata['test_path']
+            'test': metadata['test_path'],
+            'pipeline_path': pipeline_path,
+            'features_path': features_path,
+            'label_cols': label_cols
         })
     else:
         for fold_info in metadata['fold_paths']:
+            fold_info['pipeline_path'] = pipeline_path
+            fold_info['features_path'] = features_path
+            fold_info['label_cols'] = label_cols
             splits_to_process.append(fold_info)
-    
-    # Push to XCom for downstream tasks
-    context['ti'].xcom_push(key='splits_to_process', value=splits_to_process)
-    context['ti'].xcom_push(key='pipeline_path', value=pipeline_path)
-    context['ti'].xcom_push(key='features_path', value=features_path)
-    context['ti'].xcom_push(key='label_cols', value=label_cols)
     
     return splits_to_process
 
@@ -548,31 +564,21 @@ with DAG(
     metadata_load_task = PythonOperator(
         task_id="metadata_load",
         python_callable=metadata_load,
-        provide_context=True,
     )
     
     # Task 2: Build and save preprocessing pipeline
     pipeline_build_task = PythonOperator(
         task_id="pipeline_build",
         python_callable=pipeline_build,
-        provide_context=True,
         outlets=[PREPROCESSING_PIPELINE_ASSET],
     )
     
     # Task 3: Prepare transform tasks (prepares list for parallel processing)
-    transform_prepare_task = PythonOperator(
-        task_id="transform_prepare",
-        python_callable=transform_prepare,
-        provide_context=True,
-    )
+    transform_prepare_task = transform_prepare()
     
     # Task 4: Transform splits in parallel using dynamic task mapping
     split_transform_tasks = split_transform.expand(
-        split_info="{{ ti.xcom_pull(task_ids='transform_prepare', key='splits_to_process') }}"
-    ).partial(
-        pipeline_path="{{ ti.xcom_pull(task_ids='transform_prepare', key='pipeline_path') }}",
-        features_path="{{ ti.xcom_pull(task_ids='transform_prepare', key='features_path') }}",
-        label_cols="{{ ti.xcom_pull(task_ids='transform_prepare', key='label_cols') }}"
+        split_info=transform_prepare_task
     )
     split_transform_tasks.operator.outlets = [TRANSFORMED_DATA_ASSET]  # This task produces the transformed data
     
@@ -580,7 +586,6 @@ with DAG(
     preprocessed_eda_task = PythonOperator(
         task_id="preprocessed_eda",
         python_callable=preprocessed_eda,
-        provide_context=True,
     )
     
     # Task dependencies

@@ -17,8 +17,8 @@
     "retry_delay_seconds": 300
   },
   "DATA": {
-    "RAW_PATH_FILE": "../../data/train.csv",
-    "PROCESSED_PATH": "/home/jovyan/data/processed",
+    "RAW_PATH_FILE": "/opt/airflow/data/train.csv",
+    "PROCESSED_PATH": "/opt/airflow/data/processed",
     "TRAIN_TEST_SPLIT": 0.2,
     "VALIDATION_RULES": {
       "max_null_percentage": 0.1,
@@ -35,13 +35,14 @@
     "TIME_SERIES_EXPANDING": true
   },
   "PREPROCESSING": {
-    "FEATURES_PATH": "/home/jovyan/data/features",
+    "FEATURES_PATH": "/opt/airflow/data/features",
     "PIPELINE_SPEC": {
       "steps": [
         {"dateSplit": {"columns": [], "dropColumns": true}},
-        {"scaler": {"columns": []}},
-        {"onehot": {"columns": []}},
-        {"drop": {"columns": []}},
+        {"imputer": {"columns": ["Age"], "numeric_strategy": "median"}},
+        {"scaler": {"columns": ["Pclass", "SibSp","Age", "Parch", "Fare"]}},
+        {"onehot": {"columns": ["Sex"]}},
+        {"drop": {"columns": ["PassengerId", "Name", "Ticket", "Cabin", "Embarked"]}},
         {"index": {"column": ""}},
         {"sequencer": {"column": "", "sequence_length": 60}}
       ]
@@ -49,7 +50,7 @@
   },
   "MODEL": {
     "ARTIFACTS_PATH": "/mlflow/artifacts",
-    "LABEL_COLUMNS": ["target"],
+    "LABEL_COLUMNS": ["Survived"],
     "EPOCHS": 50,
     "BATCH_SIZE": 32,
     "OPTIMIZER": "adam",

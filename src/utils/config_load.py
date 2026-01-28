@@ -203,7 +203,8 @@ class Config:
         # Keep the seconds key as well for logging/backwards compatibility
 
         # Log the loaded config (masking none-sensitive fields)
-        log_copy = dict(merged)
+        import copy
+        log_copy = copy.deepcopy(merged)
         # Replace timedelta with seconds for logging
         try:
             rd = log_copy.get("DEFAULT_DAG_ARGS", {}).get("retry_delay")

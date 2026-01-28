@@ -9,8 +9,8 @@ from sklearn.preprocessing import FunctionTransformer
 import joblib
 from typing import Dict, Any, List, Optional
 
-from utils.config_load import Config
-from utils.data_transform import (
+from config_load import Config
+from data_transform import (
         PipelineOneHotEncoder,
         PipelineFeatureStandardScaler,
         PipelineFeatureDropper,

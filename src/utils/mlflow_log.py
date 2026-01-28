@@ -469,10 +469,10 @@ class MLFlowLogger:
             >>> logger.log_keras_model(model, "trained_model", signature=signature)
             >>> logger.end_run()
         """
+        import mlflow.keras
+        
         if mlflow.active_run() is None:
             raise RuntimeError("No active MLflow run. Call start_run() first.")
-        
-        import mlflow.keras
         
         mlflow.keras.log_model(
             model=model,
