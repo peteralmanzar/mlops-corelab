@@ -152,13 +152,15 @@ def pipeline_build(**context):
     )
     
     # Start MLflow run
-    run_name = f"Pipeline_Build_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    dag_run_id = context.get('dag_run').run_id
+    run_name = f"{dag_run_id}_Pipeline_Build"
     tags = {
         "task_type": "preprocessing_pipeline",
         "split_type": metadata['split_type'],
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
-        "execution_date": str(context.get('execution_date'))
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id
     }
     
     try:
@@ -385,14 +387,16 @@ def preprocessed_eda(**context):
     )
     
     # Start MLflow run
-    run_name = f"EDA_Preprocessed_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    dag_run_id = context.get('dag_run').run_id
+    run_name = f"{dag_run_id}_EDA_Preprocessed"
     tags = {
         "task_type": "eda",
         "data_source": "preprocessed",
         "split_type": metadata['split_type'],
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
-        "execution_date": str(context.get('execution_date'))
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id
     }
     
     try:

@@ -19,7 +19,7 @@ import json
 from typing import Dict, Any, List, Tuple
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, get_current_context
 from airflow.decorators import task
 from airflow.models import XCom
 from tensorflow.keras.callbacks import EarlyStopping
@@ -329,14 +329,19 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
         experiment_name=mlflow_experiment_name
     )
     
+    # Get Airflow context for TaskFlow function
+    context = get_current_context()
+    dag_run_id = context.get('dag_run').run_id
+    
     # Start MLflow run
-    run_name = f"Model_Train_Fold_{fold_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"{dag_run_id}_Model_Train_Fold_{fold_id}"
     tags = {
         "task_type": "model_training",
         "model_type": task_type,
         "fold_id": str(fold_id),
-        "dag_id": "03_dag_model",
-        "task_id": "train_fold_model"
+        "dag_id": context.get('dag').dag_id,
+        "task_id": context.get('task').task_id,
+        "airflow_dag_run_id": dag_run_id
     }
     
     try:

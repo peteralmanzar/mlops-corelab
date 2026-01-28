@@ -82,13 +82,15 @@ def perform_eda(**context):
     )
     
     # Start MLflow run
-    run_name = f"EDA_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    dag_run_id = context.get('dag_run').run_id
+    run_name = f"{dag_run_id}_EDA"
     tags = {
         "task_type": "eda",
         "data_source": "raw",
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
-        "execution_date": str(context.get('execution_date'))
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id
     }
     
     try:
@@ -261,8 +263,9 @@ def split_data(**context):
         mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
         logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
         
-        run_name = f"Data_Split_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id}
+        dag_run_id = context.get('dag_run').run_id
+        run_name = f"{dag_run_id}_Data_Split"
+        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id, "airflow_dag_run_id": dag_run_id}
         
         try:
             logger.start_run(run_name=run_name, tags=tags)
