@@ -591,35 +591,60 @@ def model_register(**context):
     )
     
     # Combine preprocessing pipeline (from DAG 02) with the trained Keras model and register combined pipeline
-    # Retrieve preprocessing pipeline run id from DAG 02
-    pipeline_run_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='pipeline_build', key='pipeline_mlflow_run_id', include_prior_dates=True)
-    pipeline_run_id = None
-    if pipeline_run_list:
-        pipeline_run_id = pipeline_run_list[0] if isinstance(pipeline_run_list, list) else pipeline_run_list
+    # Retrieve preprocessing pipeline MLflow run id from DAG 02 (artifact run id)
+    pipeline_mlflow_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='pipeline_build', key='pipeline_mlflow_run_id', include_prior_dates=True)
+    pipeline_mlflow_run_id = pipeline_mlflow_list[0] if pipeline_mlflow_list and isinstance(pipeline_mlflow_list, list) else pipeline_mlflow_list
 
-    if not pipeline_run_id:
+    # Retrieve pipeline timestamp run id (the human-friendly pipeline_run_id) from local metadata
+    pipeline_ts = ti.xcom_pull(task_ids='metadata_load', key='pipeline_run_id')
+
+    if not pipeline_mlflow_run_id:
         raise ValueError("pipeline_mlflow_run_id not found in XCom from DAG 02. Cannot combine pipeline and model.")
 
-    print(f"Combining preprocessing pipeline (run: {pipeline_run_id}) with Keras model (run: {best_fold['run_id']})")
+    print(f"Combining preprocessing pipeline (mlflow run: {pipeline_mlflow_run_id}, pipeline id: {pipeline_ts}) with Keras model (run: {best_fold['run_id']})")
 
     # Use ModelBuilder to load and combine
     builder = ModelBuilder(config)
-    preprocessing_pipeline = builder.load_preprocessing_pipeline(pipeline_run_id=pipeline_run_id, artifact_path='preprocessing_pipeline')
+    preprocessing_pipeline = builder.load_preprocessing_pipeline(pipeline_run_id=pipeline_mlflow_run_id, artifact_path='preprocessing_pipeline')
     trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='model')
     combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
 
-    # Log combined pipeline in a new MLflow run and register that
-    run_name = f"{pipeline_run_id}_combined_model_register"
+    # Prepare pipeline run id and step tracking similar to other tasks
+    current_step = ti.xcom_pull(task_ids='metadata_load', key='pipeline_step') or 0
+    current_step += 1
+    ti.xcom_push(key='pipeline_step', value=current_step)
+
+    dag_run_id = context.get('dag_run').run_id
+    # Use the human-friendly pipeline timestamp id in the run name when available
+    run_prefix = pipeline_ts if pipeline_ts else pipeline_mlflow_run_id
+    run_name = f"{run_prefix}_{current_step:02d}_Combined_Model_Register"
     tags = {
         "task_type": "combined_pipeline_registration",
         "best_fold_id": str(best_fold['fold_id']),
-        "pipeline_run_id": pipeline_run_id,
-        "keras_run_id": best_fold['run_id']
+        "dag_id": context.get('dag').dag_id,
+        "task_id": context.get('task').task_id,
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_ts if pipeline_ts else pipeline_mlflow_run_id,
+        "pipeline_step": str(current_step)
     }
 
     logger.start_run(run_name=run_name, tags=tags)
-    # Log combined sklearn pipeline
-    logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='combined_model', input_example=None)
+
+    # Try to construct an input example from processed training data for logging
+    try:
+        processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
+        sample_df = None
+        sample_file = os.path.join(processed_path, 'train.csv')
+        if os.path.exists(sample_file):
+            import pandas as _pd
+            sample_df = _pd.read_csv(sample_file).head(5)
+        input_example = sample_df[[c for c in sample_df.columns if c not in config.MODEL.get('LABEL_COLUMNS', ['target'])]] if sample_df is not None else None
+    except Exception:
+        input_example = None
+
+    # Log combined sklearn pipeline with input example when possible
+    logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='combined_model', input_example=input_example)
     # Log the saved joblib as artifact for redundancy
     logger.log_artifact(combined_path, artifact_path='combined_artifacts')
 
@@ -635,7 +660,7 @@ def model_register(**context):
         "best_fold_id": str(best_fold['fold_id']),
         "best_metric": best_metric_key,
         "best_metric_value": str(best_metric_value),
-        "preprocessing_run_id": pipeline_run_id,
+        "preprocessing_run_id": pipeline_mlflow_run_id,
         "keras_run_id": best_fold['run_id'],
         "combined_pipeline_path": combined_path,
         "registered_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -650,12 +675,14 @@ def model_register(**context):
         'model_uri': combined_model_uri,
         'best_fold_id': best_fold['fold_id'],
         'best_run_id': best_fold['run_id'],
-        'preprocessing_run_id': pipeline_run_id,
+        'preprocessing_run_id': pipeline_mlflow_run_id,
+        'pipeline_run_id': pipeline_ts,
         'best_metric': best_metric_key,
         'best_metric_value': best_metric_value,
         'task_type': task_type,
         'all_fold_results': fold_results,
-        'combined_pipeline_path': combined_path
+        'combined_pipeline_path': combined_path,
+        'pipeline_step': current_step
     }
 
     context['ti'].xcom_push(key='registration_info', value=registration_info)
@@ -683,6 +710,9 @@ def validate_registered_model(**context):
 
     model_name = registration_info.get('model_name')
     model_version = registration_info.get('model_version')
+    preprocessing_mlflow_id = registration_info.get('preprocessing_run_id')
+    pipeline_ts = registration_info.get('pipeline_run_id')
+
     if model_name is None or model_version is None:
         raise ValueError("registration_info missing model_name or model_version")
 
@@ -692,7 +722,6 @@ def validate_registered_model(**context):
 
     # Load the registered combined pipeline
     model_uri = f"models:/{model_name}/{model_version}"
-    combined_pipeline = None
     try:
         combined_pipeline = MLFlowLogger.load_sklearn_pipeline(model_uri)
     except Exception as e:
@@ -711,6 +740,25 @@ def validate_registered_model(**context):
     label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
     X_sample = sample_df[[c for c in sample_df.columns if c not in label_cols]]
 
+    # Get and increment step counter for MLflow naming
+    current_step = ti.xcom_pull(task_ids='model_register', key='pipeline_step') or 0
+    current_step += 1
+    ti.xcom_push(key='pipeline_step', value=current_step)
+
+    dag_run_id = context.get('dag_run').run_id
+    # Use pipeline timestamp id for naming when available
+    run_prefix = pipeline_ts if pipeline_ts else preprocessing_mlflow_id
+    run_name = f"{run_prefix}_{current_step:02d}_Preprocessed_Model_Validation"
+    tags = {
+        "task_type": "validation",
+        "dag_id": context.get('dag').dag_id,
+        "task_id": context.get('task').task_id,
+        "execution_date": str(context.get('execution_date')),
+        "airflow_dag_run_id": dag_run_id,
+        "pipeline_run_id": pipeline_ts or preprocessing_mlflow_id,
+        "pipeline_step": str(current_step)
+    }
+
     # Run end-to-end prediction
     try:
         start = datetime.now()
@@ -726,8 +774,8 @@ def validate_registered_model(**context):
     if np.isnan(preds_arr).any():
         raise ValueError("Predictions contain NaN values")
 
-    # Log validation metrics to MLflow
-    logger.start_run(run_name=f"validate_registered_model_{model_name}_{model_version}")
+    # Log validation metrics to MLflow with tags and run name consistent with other tasks
+    logger.start_run(run_name=run_name, tags=tags)
     logger.log_metrics({
         'validation_sample_size': int(len(X_sample)),
         'inference_time_seconds': float(duration),
