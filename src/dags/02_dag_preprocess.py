@@ -270,13 +270,15 @@ def pipeline_build(**context):
         
         logger.log_text("\n".join(pipeline_details), "pipeline_details.txt")
         
+        # Capture MLflow run id and push to XCom for downstream DAGs
+        run_id = logger.get_run_id()
+        context['ti'].xcom_push(key='mlflow_run_id', value=run_id)
+        context['ti'].xcom_push(key='pipeline_mlflow_run_id', value=run_id)
+
         # End MLflow run
         logger.end_run(status="FINISHED")
-        
-        # Push additional metadata to XCom
-        context['ti'].xcom_push(key='mlflow_run_id', value=logger.get_run_id())
-        
-        print(f"Pipeline logged to MLflow (Run ID: {logger.get_run_id()})")
+
+        print(f"Pipeline logged to MLflow (Run ID: {run_id})")
         
     except Exception as e:
         print(f"Error logging pipeline to MLflow: {e}")

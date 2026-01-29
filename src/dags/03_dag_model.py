@@ -35,6 +35,7 @@ from model_template import (
     GetModelTemplateMLPMultiClassification,
     Optimizer
 )
+from model_builder import ModelBuilder
 
 # Import assets
 from assets import TRANSFORMED_DATA_ASSET, TRAINED_MODEL_ASSET
@@ -348,21 +349,13 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
         # If it's already an enum (shouldn't happen but safe)
         optimizer = optimizer_value
     
+    # Instantiate model using ModelBuilder for consistency and configurability
+    model_builder = ModelBuilder(config)
+    model = model_builder.build_model_for_training(task_type=task_type, num_features=num_features, num_classes=num_classes)
     if task_type == 'regression':
-        model = GetModelTemplateMLPRegression(numberOfFeatures=num_features, optimizer=optimizer)
         metrics_to_track = ['loss', 'mean_squared_error']
-    elif task_type == 'binary_classification':
-        model = GetModelTemplateMLPBinaryClassification(numberOfFeatures=num_features, optimizer=optimizer)
-        metrics_to_track = ['loss', 'accuracy']
-    elif task_type == 'multi_classification':
-        model = GetModelTemplateMLPMultiClassification(
-            numberOfFeatures=num_features,
-            num_classes=num_classes,
-            optimizer=optimizer
-        )
-        metrics_to_track = ['loss', 'accuracy']
     else:
-        raise ValueError(f"Unknown task type: {task_type}")
+        metrics_to_track = ['loss', 'accuracy']
     
     print(f"\nModel instantiated: {task_type}")
     print(f"Model summary:")
@@ -597,51 +590,155 @@ def model_register(**context):
         experiment_name=mlflow_experiment_name
     )
     
-    # Register best model
-    model_uri = best_fold['model_uri']
+    # Combine preprocessing pipeline (from DAG 02) with the trained Keras model and register combined pipeline
+    # Retrieve preprocessing pipeline run id from DAG 02
+    pipeline_run_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='pipeline_build', key='pipeline_mlflow_run_id', include_prior_dates=True)
+    pipeline_run_id = None
+    if pipeline_run_list:
+        pipeline_run_id = pipeline_run_list[0] if isinstance(pipeline_run_list, list) else pipeline_run_list
+
+    if not pipeline_run_id:
+        raise ValueError("pipeline_mlflow_run_id not found in XCom from DAG 02. Cannot combine pipeline and model.")
+
+    print(f"Combining preprocessing pipeline (run: {pipeline_run_id}) with Keras model (run: {best_fold['run_id']})")
+
+    # Use ModelBuilder to load and combine
+    builder = ModelBuilder(config)
+    preprocessing_pipeline = builder.load_preprocessing_pipeline(pipeline_run_id=pipeline_run_id, artifact_path='preprocessing_pipeline')
+    trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='model')
+    combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
+
+    # Log combined pipeline in a new MLflow run and register that
+    run_name = f"{pipeline_run_id}_combined_model_register"
+    tags = {
+        "task_type": "combined_pipeline_registration",
+        "best_fold_id": str(best_fold['fold_id']),
+        "pipeline_run_id": pipeline_run_id,
+        "keras_run_id": best_fold['run_id']
+    }
+
+    logger.start_run(run_name=run_name, tags=tags)
+    # Log combined sklearn pipeline
+    logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='combined_model', input_example=None)
+    # Log the saved joblib as artifact for redundancy
+    logger.log_artifact(combined_path, artifact_path='combined_artifacts')
+
+    combined_run_id = logger.get_run_id()
+    logger.end_run(status='FINISHED')
+
+    # Register combined model from this run
+    combined_model_uri = f"runs:/{combined_run_id}/combined_model"
     model_name = "ml_pipeline_model"
-    
+
     registration_tags = {
         "task_type": task_type,
         "best_fold_id": str(best_fold['fold_id']),
         "best_metric": best_metric_key,
         "best_metric_value": str(best_metric_value),
+        "preprocessing_run_id": pipeline_run_id,
+        "keras_run_id": best_fold['run_id'],
+        "combined_pipeline_path": combined_path,
         "registered_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
-    
-    print(f"\nRegistering model to MLflow Model Registry...")
-    print(f"  Model URI: {model_uri}")
-    print(f"  Model Name: {model_name}")
-    
-    registered_model = logger.register_model(
-        model_uri=model_uri,
-        model_name=model_name,
-        tags=registration_tags
-    )
-    
+
+    registered_model = logger.register_model(model_uri=combined_model_uri, model_name=model_name, tags=registration_tags)
+
     # Push registration info to XCom
     registration_info = {
         'model_name': model_name,
         'model_version': registered_model.version,
-        'model_uri': model_uri,
+        'model_uri': combined_model_uri,
         'best_fold_id': best_fold['fold_id'],
         'best_run_id': best_fold['run_id'],
+        'preprocessing_run_id': pipeline_run_id,
         'best_metric': best_metric_key,
         'best_metric_value': best_metric_value,
         'task_type': task_type,
-        'all_fold_results': fold_results
+        'all_fold_results': fold_results,
+        'combined_pipeline_path': combined_path
     }
-    
+
     context['ti'].xcom_push(key='registration_info', value=registration_info)
-    
+
     print(f"\n{'='*60}")
-    print(f"Model registered successfully!")
+    print(f"Combined model registered successfully!")
     print(f"  Version: {registered_model.version}")
     print(f"  Best fold: {best_fold['fold_id']}")
     print(f"  {best_metric_key}: {best_metric_value:.4f}")
     print(f"{'='*60}")
-    
+
     return f"Registered {model_name} v{registered_model.version} from fold {best_fold['fold_id']}"
+
+
+def validate_registered_model(**context):
+    """
+    Validate the registered combined model end-to-end using raw data from processed folder.
+    Loads the registered sklearn Pipeline from the Model Registry and runs predictions
+    on a sample of processed raw data to ensure end-to-end correctness.
+    """
+    ti = context['ti']
+    registration_info = ti.xcom_pull(task_ids='model_register', key='registration_info')
+    if not registration_info:
+        raise ValueError("No registration_info found in XCom from model_register task")
+
+    model_name = registration_info.get('model_name')
+    model_version = registration_info.get('model_version')
+    if model_name is None or model_version is None:
+        raise ValueError("registration_info missing model_name or model_version")
+
+    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
+
+    # Load the registered combined pipeline
+    model_uri = f"models:/{model_name}/{model_version}"
+    combined_pipeline = None
+    try:
+        combined_pipeline = MLFlowLogger.load_sklearn_pipeline(model_uri)
+    except Exception as e:
+        raise RuntimeError(f"Failed to load registered combined pipeline {model_uri}: {e}")
+
+    # Load sample raw data from processed path
+    processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
+    sample_path = os.path.join(processed_path, "train.csv")
+    if not os.path.exists(sample_path):
+        raise FileNotFoundError(f"Sample processed data not found: {sample_path}")
+
+    sample_df = pd.read_csv(sample_path)
+    sample_size = config.MODEL.get("VALIDATION_SAMPLE_SIZE", 100)
+    sample_df = sample_df.head(sample_size)
+
+    label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+    X_sample = sample_df[[c for c in sample_df.columns if c not in label_cols]]
+
+    # Run end-to-end prediction
+    try:
+        start = datetime.now()
+        preds = combined_pipeline.transform(X_sample)
+        duration = (datetime.now() - start).total_seconds()
+    except Exception as e:
+        raise RuntimeError(f"Inference with combined pipeline failed: {e}")
+
+    # Basic validations
+    if preds is None:
+        raise ValueError("Combined pipeline returned None predictions")
+    preds_arr = preds if hasattr(preds, 'shape') else np.asarray(preds)
+    if np.isnan(preds_arr).any():
+        raise ValueError("Predictions contain NaN values")
+
+    # Log validation metrics to MLflow
+    logger.start_run(run_name=f"validate_registered_model_{model_name}_{model_version}")
+    logger.log_metrics({
+        'validation_sample_size': int(len(X_sample)),
+        'inference_time_seconds': float(duration),
+        'output_rows': int(preds_arr.shape[0]),
+        'output_cols': int(preds_arr.shape[1]) if len(preds_arr.shape) > 1 else 1,
+        'inference_success': 1
+    })
+    logger.log_params({'model_name': model_name, 'model_version': model_version})
+    logger.end_run(status='FINISHED')
+
+    return f"Validation successful for {model_name} v{model_version} on {len(X_sample)} samples"
 
 
 # DAG definition
@@ -681,5 +778,11 @@ with DAG(
         python_callable=model_register,
     )
     
+    # Task 5: Validate registered combined model
+    validate_model_task = PythonOperator(
+        task_id="validate_model",
+        python_callable=validate_registered_model,
+    )
+    
     # Task dependencies
-    metadata_load_task >> model_build_task >> train_fold_model_tasks >> model_register_task
+    metadata_load_task >> model_build_task >> train_fold_model_tasks >> model_register_task >> validate_model_task

@@ -372,6 +372,37 @@ class MLFlowLogger:
             Experiment ID
         """
         return self.experiment_id
+
+    def validate_artifact_exists(self, artifact_uri: str, attempts: int = 3) -> bool:
+        """
+        Validate that an MLflow artifact referenced by a model/artifact URI exists by
+        attempting to download it. Retries a few times on transient errors.
+
+        Args:
+            artifact_uri: MLflow artifact/model URI (e.g., 'runs:/<run_id>/preprocessing_pipeline')
+            attempts: Number of attempts for transient failures
+
+        Returns:
+            True if the artifact can be downloaded, False otherwise
+        """
+        last_exc = None
+        for i in range(attempts):
+            try:
+                # mlflow.artifacts.download_artifacts accepts run-relative URIs like 'runs:/<run_id>/path'
+                mlflow.artifacts.download_artifacts(artifact_uri)
+                return True
+            except Exception as e:
+                last_exc = e
+                # exponential backoff
+                time_sleep = min(2 ** i, 8)
+                try:
+                    import time
+                    time.sleep(time_sleep)
+                except Exception:
+                    pass
+
+        print(f"Artifact validation failed for {artifact_uri}: {last_exc}")
+        return False
     
     @staticmethod
     def load_sklearn_pipeline(model_uri: str) -> Pipeline:
