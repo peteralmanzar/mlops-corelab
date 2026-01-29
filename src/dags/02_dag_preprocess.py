@@ -38,51 +38,99 @@ config = Config.load()
 
 def metadata_load(**context):
     """
-    Load split metadata from 01_dag_data XCom.
-    Returns information about split type and file paths.
+    Load split metadata by reading config directly and detecting available files.
+    This makes the DAG robust to config changes between runs.
+    Falls back to XCom if needed for backward compatibility.
     """
     ti = context['ti']
+
+    # Read split type directly from config (source of truth)
+    fold_type = config.DATA.get("FOLD_TYPE")
+    split_type = fold_type if fold_type else "simple"
+
+    print(f"Split type from config: {split_type}")
+
+    # Verify files exist for this split type
+    processed_path = config.DATA.get("PROCESSED_PATH")
+
+    if split_type == "simple":
+        # Check for simple split files
+        train_file = os.path.join(processed_path, "train.csv")
+        test_file = os.path.join(processed_path, "test.csv")
+        if not os.path.exists(train_file) or not os.path.exists(test_file):
+            raise FileNotFoundError(
+                f"Simple split files not found in {processed_path}. "
+                f"Expected: train.csv, test.csv. "
+                f"Please run 01_dag_data with FOLD_TYPE=null/simple in config."
+            )
+    else:
+        # Check for fold files
+        import glob
+        fold_train_files = glob.glob(os.path.join(processed_path, "train_fold_*.csv"))
+        if not fold_train_files:
+            raise FileNotFoundError(
+                f"No fold files found in {processed_path}. "
+                f"Expected: train_fold_*.csv files. "
+                f"Config shows FOLD_TYPE={fold_type}. "
+                f"Please run 01_dag_data to generate {fold_type} splits."
+            )
+        print(f"Found {len(fold_train_files)} fold files")
+
+    print(f"Split type verified: {split_type}")
     
-    # Pull metadata from previous DAG run (01_dag_data)
-    # include_prior_dates=True returns a list, so we take the first (most recent) value
-    split_type_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='split_type', include_prior_dates=True)
-    
-    if split_type_list is None or len(split_type_list) == 0:
-        raise ValueError("No split metadata found from 01_dag_data. Ensure 01_dag_data has run successfully.")
-    
-    split_type = split_type_list[0] if isinstance(split_type_list, list) else split_type_list
-    
-    print(f"Split type detected: {split_type}")
-    
+    # Build metadata from actual files on disk
     metadata = {
         'split_type': split_type
     }
-    
+
     if split_type == 'simple':
-        train_path_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_path', include_prior_dates=True)
-        test_path_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_path', include_prior_dates=True)
-        train_shape_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='train_shape', include_prior_dates=True)
-        test_shape_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='test_shape', include_prior_dates=True)
-        
-        metadata['train_path'] = train_path_list[0] if isinstance(train_path_list, list) else train_path_list
-        metadata['test_path'] = test_path_list[0] if isinstance(test_path_list, list) else test_path_list
-        metadata['train_shape'] = train_shape_list[0] if isinstance(train_shape_list, list) else train_shape_list
-        metadata['test_shape'] = test_shape_list[0] if isinstance(test_shape_list, list) else test_shape_list
+        # Simple split - read file info directly
+        train_path = os.path.join(processed_path, "train.csv")
+        test_path = os.path.join(processed_path, "test.csv")
+
+        train_df = pd.read_csv(train_path)
+        test_df = pd.read_csv(test_path)
+
+        metadata['train_path'] = train_path
+        metadata['test_path'] = test_path
+        metadata['train_shape'] = train_df.shape
+        metadata['test_shape'] = test_df.shape
         print(f"Simple split: train={metadata['train_shape']}, test={metadata['test_shape']}")
-        
+
     elif split_type in ['kfold', 'stratified', 'timeseries']:
-        num_folds_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='num_folds', include_prior_dates=True)
-        fold_paths_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='fold_paths', include_prior_dates=True)
-        
-        metadata['num_folds'] = num_folds_list[0] if isinstance(num_folds_list, list) else num_folds_list
-        metadata['fold_paths'] = fold_paths_list[0] if isinstance(fold_paths_list, list) else fold_paths_list
-        print(f"{split_type} split: {metadata['num_folds']} folds")
-        
+        # Fold-based split - auto-detect fold files
+        import glob
+
+        # Use val_fold files for validation (test equivalent in cross-validation)
+        train_files = sorted(glob.glob(os.path.join(processed_path, "train_fold_*.csv")))
+        val_files = sorted(glob.glob(os.path.join(processed_path, "val_fold_*.csv")))
+
+        if len(train_files) == 0:
+            raise FileNotFoundError(f"No train_fold_*.csv files found in {processed_path}")
+        if len(val_files) == 0:
+            raise FileNotFoundError(f"No val_fold_*.csv files found in {processed_path}")
+
+        num_folds = len(train_files)
+        fold_paths = []
+
+        for i in range(num_folds):
+            # Extract fold index from filename
+            train_fold_path = train_files[i]
+            val_fold_path = val_files[i]
+
+            fold_paths.append({
+                'fold': i,
+                'train': train_fold_path,
+                'test': val_fold_path  # Use 'test' key for consistency with model training
+            })
+
+        metadata['num_folds'] = num_folds
+        metadata['fold_paths'] = fold_paths
+        print(f"{split_type} split: {num_folds} folds detected")
+
         if split_type == 'timeseries':
-            ts_gap_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_gap', include_prior_dates=True)
-            ts_expanding_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='ts_expanding', include_prior_dates=True)
-            metadata['ts_gap'] = ts_gap_list[0] if isinstance(ts_gap_list, list) else ts_gap_list
-            metadata['ts_expanding'] = ts_expanding_list[0] if isinstance(ts_expanding_list, list) else ts_expanding_list
+            metadata['ts_gap'] = config.DATA.get("TIME_SERIES_GAP", 0)
+            metadata['ts_expanding'] = config.DATA.get("TIME_SERIES_EXPANDING", True)
     
     # Pull pipeline_run_id from first DAG for traceability (from data_split task which is the outlet)
     pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='pipeline_run_id', include_prior_dates=True)

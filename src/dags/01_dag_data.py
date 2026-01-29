@@ -241,11 +241,37 @@ def split_data(**context):
     ts_gap = config.DATA.get("TIME_SERIES_GAP", 0)
     ts_expanding = config.DATA.get("TIME_SERIES_EXPANDING", True)
     processed_path = config.DATA.get("PROCESSED_PATH")
-    
+
     # Create processed directory if it doesn't exist
     os.makedirs(processed_path, exist_ok=True)
-    
+
     print(f"Split configuration: FOLD_TYPE={fold_type}, test_size={test_size}, num_folds={num_folds}")
+
+    # Clean up old split files from different split types to avoid confusion
+    # This allows switching between split types across runs
+    print("Cleaning up old split files...")
+    import glob
+
+    # Normalize fold_type for comparison
+    current_fold_type = fold_type if fold_type else "simple"
+
+    # Remove simple split files if we're doing fold-based splitting
+    if current_fold_type != "simple":
+        for old_file in ["train.csv", "test.csv"]:
+            old_path = os.path.join(processed_path, old_file)
+            if os.path.exists(old_path):
+                os.remove(old_path)
+                print(f"  Removed old simple split file: {old_file}")
+
+    # Remove fold-based files if we're doing simple split
+    if current_fold_type == "simple":
+        old_fold_files = glob.glob(os.path.join(processed_path, "train_fold_*.csv"))
+        old_fold_files += glob.glob(os.path.join(processed_path, "val_fold_*.csv"))
+        for old_file in old_fold_files:
+            os.remove(old_file)
+            print(f"  Removed old fold file: {os.path.basename(old_file)}")
+
+    print(f"Cleanup complete. Proceeding with {current_fold_type} split...")
     
     # Sort by time column if specified (for timeseries integrity)
     if time_col and time_col in df.columns:

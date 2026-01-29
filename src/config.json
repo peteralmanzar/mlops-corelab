@@ -25,7 +25,7 @@
       "min_rows": 100,
       "required_columns": []
     },
-    "FOLD_TYPE": null,
+    "FOLD_TYPE": "kfold",
     "NUM_FOLDS": 5,
     "KFOLD_SHUFFLE": true,
     "KFOLD_RANDOM_STATE": 42,
@@ -51,8 +51,8 @@
   "MODEL": {
     "ARTIFACTS_PATH": "/mlflow/artifacts",
     "LABEL_COLUMNS": ["Survived"],
-    "EPOCHS": 50,
-    "BATCH_SIZE": 32,
+    "EPOCHS": 200,
+    "BATCH_SIZE": 50,
     "OPTIMIZER": "adam",
     "EARLY_STOPPING_PATIENCE": 10,
     "VALIDATION_SPLIT": 0.2,

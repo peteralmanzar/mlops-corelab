@@ -86,128 +86,115 @@ def detect_task_type(y: pd.DataFrame, label_cols: List[str]) -> Tuple[str, int]:
 
 def metadata_load(**context):
     """
-    Load preprocessed data metadata from 02_dag_preprocess XCom.
-    Returns information about split type and file paths.
+    Load preprocessed data metadata by reading config directly and detecting available files.
+    This makes the DAG robust to config changes between runs.
     """
     ti = context['ti']
-    
-    # Pull metadata from previous DAG run (02_dag_preprocess)
-    # include_prior_dates=True returns a list, so we take the first (most recent) value
-    split_metadata_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='split_metadata', include_prior_dates=True)
-    
-    if split_metadata_list is None or len(split_metadata_list) == 0:
-        raise ValueError("No split metadata found from 02_dag_preprocess. Ensure 02_dag_preprocess has run successfully.")
-    
-    # Extract the most recent metadata (first item in the list)
-    split_metadata = split_metadata_list[0] if isinstance(split_metadata_list, list) else split_metadata_list
-    
-    print(f"DEBUG: Full split_metadata = {split_metadata}")
-    print(f"DEBUG: Type of split_metadata = {type(split_metadata)}")
-    
-    # Extract split_type - handle case where it might be a list itself
-    split_type_value = split_metadata.get('split_type')
-    if isinstance(split_type_value, list):
-        # If it's a list, take the first element
-        split_type = split_type_value[0]
-    else:
-        split_type = split_type_value
-    
-    print(f"Split type detected: {split_type}")
+
+    # Read split type directly from config (source of truth)
+    fold_type = config.DATA.get("FOLD_TYPE")
+    split_type = fold_type if fold_type else "simple"
+
+    print(f"Split type from config: {split_type}")
     
     # Get features path
-    features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
-    
-    # Prepare fold information
+    features_path = config.PREPROCESSING.get("FEATURES_PATH", "/opt/airflow/data/features")
+
+    # Verify transformed files exist and build fold information
+    import glob
+
     folds_info = []
-    
+
     if split_type == 'simple':
         # Single train/test split
+        train_path = os.path.join(features_path, "train_transformed.csv")
+        test_path = os.path.join(features_path, "test_transformed.csv")
+
+        if not os.path.exists(train_path) or not os.path.exists(test_path):
+            raise FileNotFoundError(
+                f"Simple split transformed files not found in {features_path}. "
+                f"Expected: train_transformed.csv, test_transformed.csv. "
+                f"Please run 02_dag_preprocess with current config."
+            )
+
         folds_info.append({
             'fold_id': 0,
-            'train_path': os.path.join(features_path, "train_transformed.csv"),
-            'test_path': os.path.join(features_path, "test_transformed.csv")
+            'train_path': train_path,
+            'test_path': test_path
         })
+        print(f"Simple split: found transformed files")
+
     else:
-        # K-Fold/Stratified/TimeSeries splits
-        num_folds_value = split_metadata.get('num_folds', 5)
-        # Handle case where num_folds might be a list
-        num_folds = num_folds_value[0] if isinstance(num_folds_value, list) else num_folds_value
-        
+        # K-Fold/Stratified/TimeSeries splits - auto-detect transformed fold files
+        train_files = sorted(glob.glob(os.path.join(features_path, "train_fold_*_transformed.csv")))
+        test_files = sorted(glob.glob(os.path.join(features_path, "test_fold_*_transformed.csv")))
+
+        if len(train_files) == 0:
+            raise FileNotFoundError(
+                f"No transformed fold files found in {features_path}. "
+                f"Expected: train_fold_*_transformed.csv files. "
+                f"Config shows FOLD_TYPE={fold_type}. "
+                f"Please run 02_dag_preprocess to generate transformed {fold_type} data."
+            )
+
+        num_folds = len(train_files)
+
         for fold_idx in range(num_folds):
+            train_path = os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv")
+            test_path = os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
+
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                raise FileNotFoundError(
+                    f"Missing transformed files for fold {fold_idx}: {train_path}, {test_path}"
+                )
+
             folds_info.append({
                 'fold_id': fold_idx,
-                'train_path': os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv"),
-                'test_path': os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
+                'train_path': train_path,
+                'test_path': test_path
             })
+
+        print(f"{split_type} split: found {num_folds} transformed folds")
     
-    # Pull pipeline_run_id from second DAG for traceability (it was propagated from DAG 01)
-    split_metadata_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='split_metadata', include_prior_dates=True)
-    print(f"DEBUG: split_metadata_list = {split_metadata_list}, type = {type(split_metadata_list)}")
-    
-    # Extract pipeline_run_id and pipeline_step from split_metadata
+    # Pull pipeline_run_id and pipeline_step from DAG 02 for traceability
+    pipeline_run_id_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='pipeline_run_id', include_prior_dates=True)
     pipeline_run_id = None
-    pipeline_step = 0
-    
-    if split_metadata_list is not None:
-        # Handle list of metadata dicts - take the LAST (most recent) one
-        if isinstance(split_metadata_list, list) and len(split_metadata_list) > 0:
-            metadata = split_metadata_list[-1]  # Take last (most recent) instead of first
-            if isinstance(metadata, dict):
-                pipeline_run_id = metadata.get('pipeline_run_id')
-                pipeline_step = metadata.get('pipeline_step', 0)
-        # Handle single metadata dict
-        elif isinstance(split_metadata_list, dict):
-            pipeline_run_id = split_metadata_list.get('pipeline_run_id')
-            pipeline_step = split_metadata_list.get('pipeline_step', 0)
-    
-    print(f"DEBUG: Extracted pipeline_run_id = {pipeline_run_id}, pipeline_step = {pipeline_step}")
-    
+
+    if pipeline_run_id_list is not None:
+        if isinstance(pipeline_run_id_list, list) and len(pipeline_run_id_list) > 0:
+            pipeline_run_id = pipeline_run_id_list[-1]  # Take last (most recent)
+        else:
+            pipeline_run_id = pipeline_run_id_list
+
+    print(f"Pipeline Run ID: {pipeline_run_id}")
+
     # Pull the latest step from preprocessed_eda task (last MLflow task in DAG 02)
     step_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='preprocessed_eda', key='pipeline_step', include_prior_dates=True)
-    print(f"DEBUG: step_list from preprocessed_eda = {step_list}, type = {type(step_list)}")
-    
+    pipeline_step = 0
+
     if step_list is not None:
         if isinstance(step_list, list) and len(step_list) > 0:
-            pipeline_step = step_list[-1] if step_list[-1] is not None else pipeline_step  # Take last
+            pipeline_step = step_list[-1] if step_list[-1] is not None else 0  # Take last
         elif isinstance(step_list, int):
             pipeline_step = step_list
+
+    print(f"Current Pipeline Step from DAG 02: {pipeline_step}")
     
-    if pipeline_run_id:
-        print(f"Pipeline Run ID: {pipeline_run_id}")
-        print(f"Current Pipeline Step: {pipeline_step}")
-    else:
-        print("ERROR: No pipeline_run_id found from 02_dag_preprocess!")
-        print("This usually means DAG 02 did not run successfully or XCom data is missing.")
-        raise ValueError("pipeline_run_id not found from 02_dag_preprocess. Ensure 02_dag_preprocess completed successfully.")
-    
+    if not pipeline_run_id:
+        print("WARNING: No pipeline_run_id found from 02_dag_preprocess!")
+        print("Using timestamp as fallback...")
+        pipeline_run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
     context['ti'].xcom_push(key='pipeline_step', value=pipeline_step)
     context['ti'].xcom_push(key='split_type', value=split_type)
     context['ti'].xcom_push(key='folds_info', value=folds_info)
     context['ti'].xcom_push(key='num_folds', value=len(folds_info))
-    
-    # Validate that files exist
-    for fold_info in folds_info:
-        train_path = fold_info['train_path']
-        test_path = fold_info['test_path']
-        if not os.path.exists(train_path):
-            raise FileNotFoundError(
-                f"Train file not found: {train_path}\n"
-                f"Split type is '{split_type}' but expected files are missing.\n"
-                f"This might indicate a mismatch between the data split configuration and preprocessing output.\n"
-                f"Please re-run 01_dag_data and 02_dag_preprocess with consistent configuration."
-            )
-        if not os.path.exists(test_path):
-            raise FileNotFoundError(
-                f"Test file not found: {test_path}\n"
-                f"Split type is '{split_type}' but expected files are missing.\n"
-                f"This might indicate a mismatch between the data split configuration and preprocessing output.\n"
-                f"Please re-run 01_dag_data and 02_dag_preprocess with consistent configuration."
-            )
-    
+
     print(f"Loaded metadata for {len(folds_info)} fold(s)")
-    print(f"All expected files validated successfully")
+    print(f"Split type: {split_type}")
+    print(f"All transformed files validated successfully")
     
     # Return folds_info for dynamic task mapping
     return folds_info
@@ -728,11 +715,24 @@ def validate_registered_model(**context):
         raise RuntimeError(f"Failed to load registered combined pipeline {model_uri}: {e}")
 
     # Load sample raw data from processed path
+    # Detect split type from config to load the correct file
     processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
-    sample_path = os.path.join(processed_path, "train.csv")
-    if not os.path.exists(sample_path):
-        raise FileNotFoundError(f"Sample processed data not found: {sample_path}")
+    fold_type = config.DATA.get("FOLD_TYPE")
+    split_type = fold_type if fold_type else "simple"
 
+    if split_type == "simple":
+        sample_path = os.path.join(processed_path, "train.csv")
+    else:
+        # For fold-based splits, use the first fold's training data
+        sample_path = os.path.join(processed_path, "train_fold_0.csv")
+
+    if not os.path.exists(sample_path):
+        raise FileNotFoundError(
+            f"Sample processed data not found: {sample_path}. "
+            f"Split type is {split_type}. Please run 01_dag_data to generate splits."
+        )
+
+    print(f"Loading validation sample from: {sample_path}")
     sample_df = pd.read_csv(sample_path)
     sample_size = config.MODEL.get("VALIDATION_SAMPLE_SIZE", 100)
     sample_df = sample_df.head(sample_size)
