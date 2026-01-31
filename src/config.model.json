@@ -2,8 +2,8 @@
   "_comment": "This is the base configuration template for MLOps CoreLab. Copy this file to config.json and customize for your project.",
   "config_version": 1,
   "MLFLOW": {
-    "MLFLOW_TRACKING_URI": "http://mlflow:5000",
-    "MLFLOW_EXPERIMENT_NAME": "ml_pipeline"
+    "TRACKING_URI": "http://mlflow:5000",
+    "EXPERIMENT_NAME": "ml_pipeline"
   },
   "RANDOM_SEED": 42,
   "ALERT_EMAIL": ["admin@example.com"],
@@ -15,7 +15,7 @@
     "email_on_failure": true,
     "email_on_retry": false,
     "retries": 2,
-    "retry_delay_seconds": 300
+    "retry_delay_seconds": 10
   },
   "DATA": {
     "RAW_PATH_FILE": "/home/jovyan/data/raw",

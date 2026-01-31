@@ -12,7 +12,7 @@ class Config:
     """Loads configuration from src/config.json on each call.
 
     Validation rules:
-    - Fail-fast for critical fields: MLFLOW.MLFLOW_TRACKING_URI, DEFAULT_DAG_ARGS.retry_delay_seconds
+    - Fail-fast for critical fields: MLFLOW.TRACKING_URI, DEFAULT_DAG_ARGS.retry_delay_seconds
     - Warn and default for non-critical fields.
     """
 
@@ -70,10 +70,10 @@ class Config:
             logger.warning("User config file not found at %s, using model defaults only", cfg_path)
 
         # Validation: critical fields
-        # 1) MLFLOW.MLFLOW_TRACKING_URI
+        # 1) MLFLOW.TRACKING_URI
         mlflow_cfg = merged.get("MLFLOW", {})
-        if not mlflow_cfg.get("MLFLOW_TRACKING_URI"):
-            raise ValueError("Critical configuration missing: MLFLOW.MLFLOW_TRACKING_URI")
+        if not mlflow_cfg.get("TRACKING_URI"):
+            raise ValueError("Critical configuration missing: MLFLOW.TRACKING_URI")
 
         # 2) DEFAULT_DAG_ARGS.retry_delay_seconds
         dda = merged.get("DEFAULT_DAG_ARGS", {})

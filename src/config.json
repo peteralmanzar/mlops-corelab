@@ -1,8 +1,8 @@
 {
   "config_version": 1,
   "MLFLOW": {
-    "MLFLOW_TRACKING_URI": "http://mlflow:5000",
-    "MLFLOW_EXPERIMENT_NAME": "ml_pipeline"
+    "TRACKING_URI": "http://mlflow:5000",
+    "EXPERIMENT_NAME": "ml_pipeline"
   },
   "RANDOM_SEED": 42,
   "ALERT_EMAIL": ["admin@example.com"],
@@ -25,7 +25,7 @@
       "min_rows": 100,
       "required_columns": []
     },
-    "FOLD_TYPE": "kfold",
+    "FOLD_TYPE": null,
     "NUM_FOLDS": 5,
     "KFOLD_SHUFFLE": true,
     "KFOLD_RANDOM_STATE": 42,

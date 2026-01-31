@@ -12,6 +12,7 @@ This DAG handles model training operations for the ML pipeline:
 from datetime import datetime
 import os
 import sys
+import uuid
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -156,38 +157,56 @@ def metadata_load(**context):
 
         print(f"{split_type} split: found {num_folds} transformed folds")
     
-    # Pull pipeline_run_id and pipeline_step from DAG 02 for traceability
-    pipeline_run_id_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='pipeline_run_id', include_prior_dates=True)
-    pipeline_run_id = None
+    # Get the triggering asset events to find the correct upstream DAG run
+    triggering_events = context.get('triggering_asset_events')
+    upstream_run_id = None
 
-    if pipeline_run_id_list is not None:
-        if isinstance(pipeline_run_id_list, list) and len(pipeline_run_id_list) > 0:
-            pipeline_run_id = pipeline_run_id_list[-1]  # Take last (most recent)
-        else:
-            pipeline_run_id = pipeline_run_id_list
+    if triggering_events:
+        print(f"DEBUG: triggering_asset_events = {triggering_events}")
+        # Find the run_id from the triggering event
+        for asset_uri, events in triggering_events.items():
+            print(f"DEBUG: Asset {asset_uri} has {len(events)} events")
+            for event in events:
+                print(f"DEBUG: Event: {event}")
+                # Get the source_run_id from the event
+                if hasattr(event, 'source_run_id'):
+                    upstream_run_id = event.source_run_id
+                    print(f"DEBUG: Found upstream_run_id from event.source_run_id: {upstream_run_id}")
+                    break
+                elif hasattr(event, 'extra') and event.extra:
+                    upstream_run_id = event.extra.get('run_id')
+                    print(f"DEBUG: Found upstream_run_id from event.extra: {upstream_run_id}")
+                    break
+            if upstream_run_id:
+                break
 
-    print(f"Pipeline Run ID: {pipeline_run_id}")
+    # Pull invocation_id from metadata_load task (which definitely pushes all values)
+    invocation_id = None
+    if upstream_run_id:
+        print(f"DEBUG: Pulling XCom with run_id={upstream_run_id}")
+        invocation_id = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='invocation_id', run_id=upstream_run_id)
+        print(f"DEBUG: invocation_id from specific run = {invocation_id}")
 
-    # Pull the latest step from preprocessed_eda task (last MLflow task in DAG 02)
-    step_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='preprocessed_eda', key='pipeline_step', include_prior_dates=True)
-    pipeline_step = 0
+    # Fallback: use include_prior_dates if we couldn't get the specific run
+    if not invocation_id:
+        invocation_id_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='metadata_load', key='invocation_id', include_prior_dates=True)
+        print(f"DEBUG: invocation_id from metadata_load (fallback) = {invocation_id_list}, type = {type(invocation_id_list)}")
+        if invocation_id_list is not None:
+            if isinstance(invocation_id_list, list) and len(invocation_id_list) > 0:
+                invocation_id = invocation_id_list[0]
+            elif isinstance(invocation_id_list, str):
+                invocation_id = invocation_id_list
 
-    if step_list is not None:
-        if isinstance(step_list, list) and len(step_list) > 0:
-            pipeline_step = step_list[-1] if step_list[-1] is not None else 0  # Take last
-        elif isinstance(step_list, int):
-            pipeline_step = step_list
+    print(f"Pipeline Tag: {invocation_id}")
 
-    print(f"Current Pipeline Step from DAG 02: {pipeline_step}")
-    
-    if not pipeline_run_id:
-        print("WARNING: No pipeline_run_id found from 02_dag_preprocess!")
-        print("Using timestamp as fallback...")
-        pipeline_run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    if not invocation_id:
+        print("WARNING: No invocation_id found from 02_dag_preprocess!")
+        print("Using timestamp + uuid as fallback...")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        invocation_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
 
     # Push metadata for downstream tasks
-    context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-    context['ti'].xcom_push(key='pipeline_step', value=pipeline_step)
+    context['ti'].xcom_push(key='invocation_id', value=invocation_id)
     context['ti'].xcom_push(key='split_type', value=split_type)
     context['ti'].xcom_push(key='folds_info', value=folds_info)
     context['ti'].xcom_push(key='num_folds', value=len(folds_info))
@@ -349,8 +368,8 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
     model.summary()
     
     # Initialize MLflow logger
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
@@ -361,15 +380,12 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
     context = get_current_context()
     ti = context['ti']
     
-    # Get pipeline run ID and step for traceability
-    pipeline_run_id = ti.xcom_pull(task_ids='metadata_load', key='pipeline_run_id')
-    current_step = ti.xcom_pull(task_ids='metadata_load', key='pipeline_step') or 0
-    current_step += 1
-    
+    # Get pipeline tag for traceability
+    invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
     dag_run_id = context.get('dag_run').run_id
-    
+
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_{current_step:02d}_Model_Train_Fold_{fold_id}"
+    run_name = f"D3S1_Model_Train_Fold_{fold_id}"
     tags = {
         "task_type": "model_training",
         "model_type": task_type,
@@ -377,8 +393,8 @@ def train_fold_model(fold_info: dict, model_config: dict) -> dict:
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id if pipeline_run_id else 'unknown',
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id if invocation_id else 'unknown',
+        "pipeline_step": "D3S1"
     }
     
     try:
@@ -569,8 +585,8 @@ def model_register(**context):
             print(f"  Fold {fold_id}: {best_metric_key}={metric_val}")
     
     # Initialize MLflow logger for registration
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
@@ -582,13 +598,13 @@ def model_register(**context):
     pipeline_mlflow_list = ti.xcom_pull(dag_id='02_dag_preprocess', task_ids='pipeline_build', key='pipeline_mlflow_run_id', include_prior_dates=True)
     pipeline_mlflow_run_id = pipeline_mlflow_list[0] if pipeline_mlflow_list and isinstance(pipeline_mlflow_list, list) else pipeline_mlflow_list
 
-    # Retrieve pipeline timestamp run id (the human-friendly pipeline_run_id) from local metadata
-    pipeline_ts = ti.xcom_pull(task_ids='metadata_load', key='pipeline_run_id')
+    # Retrieve invocation_id from local metadata
+    invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
 
     if not pipeline_mlflow_run_id:
         raise ValueError("pipeline_mlflow_run_id not found in XCom from DAG 02. Cannot combine pipeline and model.")
 
-    print(f"Combining preprocessing pipeline (mlflow run: {pipeline_mlflow_run_id}, pipeline id: {pipeline_ts}) with Keras model (run: {best_fold['run_id']})")
+    print(f"Combining preprocessing pipeline (mlflow run: {pipeline_mlflow_run_id}) with Keras model (run: {best_fold['run_id']})")
 
     # Use ModelBuilder to load and combine
     builder = ModelBuilder(config)
@@ -596,15 +612,8 @@ def model_register(**context):
     trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='model')
     combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
 
-    # Prepare pipeline run id and step tracking similar to other tasks
-    current_step = ti.xcom_pull(task_ids='metadata_load', key='pipeline_step') or 0
-    current_step += 1
-    ti.xcom_push(key='pipeline_step', value=current_step)
-
     dag_run_id = context.get('dag_run').run_id
-    # Use the human-friendly pipeline timestamp id in the run name when available
-    run_prefix = pipeline_ts if pipeline_ts else pipeline_mlflow_run_id
-    run_name = f"{run_prefix}_{current_step:02d}_Combined_Model_Register"
+    run_name = "D3S2_Combined_Model_Register"
     tags = {
         "task_type": "combined_pipeline_registration",
         "best_fold_id": str(best_fold['fold_id']),
@@ -612,8 +621,8 @@ def model_register(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_ts if pipeline_ts else pipeline_mlflow_run_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D3S2"
     }
 
     logger.start_run(run_name=run_name, tags=tags)
@@ -663,13 +672,11 @@ def model_register(**context):
         'best_fold_id': best_fold['fold_id'],
         'best_run_id': best_fold['run_id'],
         'preprocessing_run_id': pipeline_mlflow_run_id,
-        'pipeline_run_id': pipeline_ts,
         'best_metric': best_metric_key,
         'best_metric_value': best_metric_value,
         'task_type': task_type,
         'all_fold_results': fold_results,
-        'combined_pipeline_path': combined_path,
-        'pipeline_step': current_step
+        'combined_pipeline_path': combined_path
     }
 
     context['ti'].xcom_push(key='registration_info', value=registration_info)
@@ -697,14 +704,13 @@ def validate_registered_model(**context):
 
     model_name = registration_info.get('model_name')
     model_version = registration_info.get('model_version')
-    preprocessing_mlflow_id = registration_info.get('preprocessing_run_id')
-    pipeline_ts = registration_info.get('pipeline_run_id')
+    invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
 
     if model_name is None or model_version is None:
         raise ValueError("registration_info missing model_name or model_version")
 
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
 
     # Load the registered combined pipeline
@@ -740,23 +746,16 @@ def validate_registered_model(**context):
     label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
     X_sample = sample_df[[c for c in sample_df.columns if c not in label_cols]]
 
-    # Get and increment step counter for MLflow naming
-    current_step = ti.xcom_pull(task_ids='model_register', key='pipeline_step') or 0
-    current_step += 1
-    ti.xcom_push(key='pipeline_step', value=current_step)
-
     dag_run_id = context.get('dag_run').run_id
-    # Use pipeline timestamp id for naming when available
-    run_prefix = pipeline_ts if pipeline_ts else preprocessing_mlflow_id
-    run_name = f"{run_prefix}_{current_step:02d}_Preprocessed_Model_Validation"
+    run_name = "D3S3_Preprocessed_Model_Validation"
     tags = {
         "task_type": "validation",
         "dag_id": context.get('dag').dag_id,
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_ts or preprocessing_mlflow_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D3S3"
     }
 
     # Run end-to-end prediction

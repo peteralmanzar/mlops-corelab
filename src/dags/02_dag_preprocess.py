@@ -17,6 +17,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import mlflow
 
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
@@ -132,48 +133,57 @@ def metadata_load(**context):
             metadata['ts_gap'] = config.DATA.get("TIME_SERIES_GAP", 0)
             metadata['ts_expanding'] = config.DATA.get("TIME_SERIES_EXPANDING", True)
     
-    # Pull pipeline_run_id from first DAG for traceability (from data_split task which is the outlet)
-    pipeline_run_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='pipeline_run_id', include_prior_dates=True)
-    print(f"DEBUG: pipeline_run_id_list = {pipeline_run_id_list}, type = {type(pipeline_run_id_list)}")
-    
-    if pipeline_run_id_list is not None:
-        if isinstance(pipeline_run_id_list, list) and len(pipeline_run_id_list) > 0:
-            pipeline_run_id = pipeline_run_id_list[-1]  # Take last (most recent)
-        elif isinstance(pipeline_run_id_list, str):
-            pipeline_run_id = pipeline_run_id_list
-        else:
-            pipeline_run_id = None
+    # Get the triggering asset events to find the correct upstream DAG run
+    triggering_events = context.get('triggering_asset_events')
+    upstream_run_id = None
+
+    if triggering_events:
+        print(f"DEBUG: triggering_asset_events = {triggering_events}")
+        for asset_uri, events in triggering_events.items():
+            print(f"DEBUG: Asset {asset_uri} has {len(events)} events")
+            for event in events:
+                print(f"DEBUG: Event: {event}")
+                if hasattr(event, 'source_run_id'):
+                    upstream_run_id = event.source_run_id
+                    print(f"DEBUG: Found upstream_run_id from event.source_run_id: {upstream_run_id}")
+                    break
+                elif hasattr(event, 'extra') and event.extra:
+                    upstream_run_id = event.extra.get('run_id')
+                    print(f"DEBUG: Found upstream_run_id from event.extra: {upstream_run_id}")
+                    break
+            if upstream_run_id:
+                break
+
+    # Pull invocation_id using specific run_id if available
+    invocation_id = None
+    if upstream_run_id:
+        print(f"DEBUG: Pulling XCom with run_id={upstream_run_id}")
+        invocation_id = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='invocation_id', run_id=upstream_run_id)
+        print(f"DEBUG: invocation_id from specific run = {invocation_id}")
+
+    # Fallback: use include_prior_dates if we couldn't get the specific run
+    if not invocation_id:
+        invocation_id_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='invocation_id', include_prior_dates=True)
+        print(f"DEBUG: invocation_id_list (fallback) = {invocation_id_list}, type = {type(invocation_id_list)}")
+        if invocation_id_list is not None:
+            if isinstance(invocation_id_list, list) and len(invocation_id_list) > 0:
+                invocation_id = invocation_id_list[0]  # Take first (most recent)
+            elif isinstance(invocation_id_list, str):
+                invocation_id = invocation_id_list
+
+    if invocation_id:
+        print(f"Pipeline Tag: {invocation_id}")
+        metadata['invocation_id'] = invocation_id
     else:
-        pipeline_run_id = None
-    
-    # Pull the latest step counter from DAG 01
-    pipeline_step_list = ti.xcom_pull(dag_id='01_dag_data', task_ids='data_split', key='pipeline_step', include_prior_dates=True)
-    print(f"DEBUG: pipeline_step_list = {pipeline_step_list}, type = {type(pipeline_step_list)}")
-    
-    if pipeline_step_list is not None:
-        if isinstance(pipeline_step_list, list) and len(pipeline_step_list) > 0:
-            pipeline_step = pipeline_step_list[-1]  # Take last (most recent)
-        elif isinstance(pipeline_step_list, int):
-            pipeline_step = pipeline_step_list
-        else:
-            pipeline_step = 0
-    else:
-        pipeline_step = 0
-    
-    if pipeline_run_id:
-        print(f"Pipeline Run ID: {pipeline_run_id}")
-        print(f"Current Pipeline Step from DAG 01: {pipeline_step}")
-        metadata['pipeline_run_id'] = pipeline_run_id
-        metadata['pipeline_step'] = pipeline_step
-    else:
-        print("ERROR: No pipeline_run_id found from 01_dag_data!")
+        print("ERROR: No invocation_id found from 01_dag_data!")
         print("This usually means DAG 01 did not run successfully or XCom data is missing.")
-        raise ValueError("pipeline_run_id not found from 01_dag_data. Ensure 01_dag_data completed successfully.")
-    
+        raise ValueError("invocation_id not found from 01_dag_data. Ensure 01_dag_data completed successfully.")
+
     # Push metadata for downstream tasks
     context['ti'].xcom_push(key='split_metadata', value=metadata)
-    
-    return f"Loaded {split_type} split metadata (Pipeline ID: {pipeline_run_id})"  
+    context['ti'].xcom_push(key='invocation_id', value=invocation_id)
+
+    return f"Loaded {split_type} split metadata (Pipeline Tag: {invocation_id})"  
 
 
 def pipeline_build(**context):
@@ -229,26 +239,20 @@ def pipeline_build(**context):
     print(f"Pipeline saved to: {pipeline_path}")
     
     # Initialize MLflow logger and log pipeline
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
         experiment_name=mlflow_experiment_name
     )
     
-    # Get pipeline run ID for traceability
-    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
-    
-    # Get and increment step counter
-    current_step = metadata.get('pipeline_step', 0)
-    current_step += 1
-    context['ti'].xcom_push(key='pipeline_step', value=current_step)
-    
+    # Get pipeline tag for traceability
+    invocation_id = metadata.get('invocation_id', 'unknown')
     dag_run_id = context.get('dag_run').run_id
-    
+
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_Pipeline_Build"
+    run_name = "D2S1_Preprocess_Pipeline_Build"
     tags = {
         "task_type": "preprocessing_pipeline",
         "split_type": metadata['split_type'],
@@ -256,8 +260,8 @@ def pipeline_build(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D2S1"
     }
     
     try:
@@ -500,27 +504,20 @@ def validate_transformed_data(**context):
             })
     
     # Initialize MLflow logger
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
         experiment_name=mlflow_experiment_name
     )
     
-    # Get pipeline run ID for traceability
-    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
-    
-    # Get and increment step counter
-    ti = context['ti']
-    current_step = ti.xcom_pull(task_ids='pipeline_build', key='pipeline_step') or 0
-    current_step += 1
-    ti.xcom_push(key='pipeline_step', value=current_step)
-    
+    # Get pipeline tag for traceability
+    invocation_id = metadata.get('invocation_id', 'unknown')
     dag_run_id = context.get('dag_run').run_id
-    
+
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_Validation"
+    run_name = "D2S2_Preprocess_Validation"
     tags = {
         "task_type": "validation",
         "split_type": metadata['split_type'],
@@ -528,8 +525,8 @@ def validate_transformed_data(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D2S2"
     }
     
     validation_passed = True
@@ -703,27 +700,24 @@ def preprocessed_eda(**context):
     df = pd.read_csv(train_path)
     
     # Initialize MLflow logger
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
         experiment_name=mlflow_experiment_name
     )
     
-    # Get pipeline run ID for traceability
-    pipeline_run_id = metadata.get('pipeline_run_id', 'unknown')
-    
-    # Get and increment step counter
+    # Get pipeline tag for traceability
+    invocation_id = metadata.get('invocation_id', 'unknown')
+
     ti = context['ti']
-    current_step = ti.xcom_pull(task_ids='validate_data', key='pipeline_step') or 0
-    current_step += 1
-    ti.xcom_push(key='pipeline_step', value=current_step)
-    
+    ti.xcom_push(key='invocation_id', value=invocation_id)
+
     dag_run_id = context.get('dag_run').run_id
-    
+
     # Start MLflow run
-    run_name = f"{pipeline_run_id}_{current_step:02d}_Preprocess_EDA"
+    run_name = "D2S3_Preprocess_EDA"
     tags = {
         "task_type": "eda",
         "data_source": "preprocessed",
@@ -732,8 +726,8 @@ def preprocessed_eda(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D2S3"
     }
     
     try:
@@ -778,39 +772,46 @@ def preprocessed_eda(**context):
             "categorical_features": ",".join(categorical_cols[:50])
         })
         
-        # Create correlation heatmap for numeric features
-        if len(numeric_cols) > 1:
-            print(f"Creating correlation heatmap for {len(numeric_cols)} numeric features...")
-            
+        # Create correlation heatmap for numeric features including target
+        # Include target column(s) to show feature-target correlations
+        heatmap_cols = numeric_cols.copy()
+        for label_col in label_cols:
+            if label_col in df.columns and label_col not in heatmap_cols:
+                # Only include numeric target columns
+                if pd.api.types.is_numeric_dtype(df[label_col]):
+                    heatmap_cols.append(label_col)
+
+        if len(heatmap_cols) > 1:
+            print(f"Creating correlation heatmap for {len(heatmap_cols)} columns (including target)...")
+
             # Calculate correlation matrix
-            corr_matrix = df[numeric_cols].corr()
-            
+            corr_matrix = df[heatmap_cols].corr()
+
             # Create figure
-            plt.figure(figsize=(12, 10))
-            
+            fig, ax = plt.subplots(figsize=(12, 10))
+
             # Create heatmap
             sns.heatmap(
                 corr_matrix,
-                annot=len(numeric_cols) <= 20,  # Only annotate if <= 20 features
+                annot=len(heatmap_cols) <= 20,  # Only annotate if <= 20 features
                 fmt='.2f',
                 cmap='coolwarm',
                 center=0,
                 square=True,
                 linewidths=0.5,
-                cbar_kws={"shrink": 0.8}
+                cbar_kws={"shrink": 0.8},
+                ax=ax
             )
-            
-            plt.title('Feature Correlation Heatmap (Preprocessed Data)', fontsize=14, pad=20)
-            plt.tight_layout()
-            
-            # Save heatmap
-            heatmap_path = os.path.join(features_path, "correlation_heatmap.png")
-            plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            # Log heatmap to MLflow
-            logger.log_artifact(heatmap_path, "visualizations")
-            print(f"Correlation heatmap saved and logged: {heatmap_path}")
+
+            ax.set_title('Feature Correlation Heatmap (Preprocessed Data, incl. Target)', fontsize=14, pad=20)
+            fig.tight_layout()
+
+            # Log heatmap directly to MLflow using log_figure
+            mlflow.log_figure(fig, "visualizations/correlation_heatmap.png")
+            print(f"Correlation heatmap logged to MLflow: visualizations/correlation_heatmap.png")
+
+            # Close figure to free memory
+            plt.close(fig)
             
             # Log correlation statistics
             corr_flat = corr_matrix.values[np.triu_indices_from(corr_matrix.values, k=1)]

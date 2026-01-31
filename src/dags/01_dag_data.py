@@ -39,31 +39,30 @@ def load_raw_data(**context):
     """
     Load raw data from configured path into a pandas DataFrame.
     Stores the DataFrame shape in XCom for validation.
-    Generates a pipeline-wide timestamp for traceability across all DAGs.
+    Generates a pipeline-wide tag for traceability across all DAGs.
+    Format: {datetime_stamp}_{uuid_suffix}
     """
-    # Generate pipeline-wide timestamp for traceability (date-based for ordering)
-    pipeline_run_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    print(f"Generated Pipeline Run ID: {pipeline_run_id}")
-    
-    # Initialize step counter for sequential MLflow run naming
-    context['ti'].xcom_push(key='pipeline_step', value=0)
-    
+    # Create invocation_id with timestamp + 8-char UUID suffix for sorting and uniqueness
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    invocation_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
+    print(f"Generated Pipeline Tag: {invocation_id}")
+
     raw_path = config.DATA.get("RAW_PATH_FILE")
-    
+
     print(f"Loading data from: {raw_path}")
     df = pd.read_csv(raw_path)
-    
+
     print(f"Data loaded successfully. Shape: {df.shape}")
     print(f"Columns: {df.columns.tolist()}")
     print(f"\nFirst few rows:\n{df.head()}")
-    
+
     # Push metadata to XCom for downstream tasks
-    context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
+    context['ti'].xcom_push(key='invocation_id', value=invocation_id)
     context['ti'].xcom_push(key='data_shape', value=df.shape)
     context['ti'].xcom_push(key='data_columns', value=df.columns.tolist())
     context['ti'].xcom_push(key='raw_data_path', value=raw_path)
-    
-    return f"Successfully loaded {df.shape[0]} rows and {df.shape[1]} columns (Pipeline ID: {pipeline_run_id})"
+
+    return f"Successfully loaded {df.shape[0]} rows and {df.shape[1]} columns (Pipeline Tag: {invocation_id})"
 
 
 def perform_eda(**context):
@@ -83,26 +82,20 @@ def perform_eda(**context):
     df = pd.read_csv(raw_path)
     
     # Initialize MLflow logger
-    mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-    mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+    mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+    mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
     
     logger = MLFlowLogger(
         tracking_uri=mlflow_tracking_uri,
         experiment_name=mlflow_experiment_name
     )
     
-    # Get pipeline run ID for traceability
+    # Get pipeline tag for traceability
     ti = context['ti']
-    pipeline_run_id = ti.xcom_pull(task_ids='raw_data_load', key='pipeline_run_id')
-    
-    # Get and increment step counter
-    current_step = ti.xcom_pull(task_ids='raw_data_load', key='pipeline_step') or 0
-    current_step += 1
-    ti.xcom_push(key='pipeline_step', value=current_step)
-    
+    invocation_id = ti.xcom_pull(task_ids='raw_data_load', key='invocation_id')
     dag_run_id = context.get('dag_run').run_id
-    
-    run_name = f"{pipeline_run_id}_{current_step:02d}_Data_EDA"
+
+    run_name = "D1S1_Data_EDA"
     tags = {
         "task_type": "eda",
         "data_source": "raw",
@@ -110,8 +103,8 @@ def perform_eda(**context):
         "task_id": context.get('task').task_id,
         "execution_date": str(context.get('execution_date')),
         "airflow_dag_run_id": dag_run_id,
-        "pipeline_run_id": pipeline_run_id,
-        "pipeline_step": str(current_step)
+        "invocation_id": invocation_id,
+        "pipeline_step": "D1S1"
     }
     
     try:
@@ -220,12 +213,10 @@ def split_data(**context):
     - If FOLD_TYPE is 'stratified': Stratified K-Fold
     - If FOLD_TYPE is 'timeseries': Time Series Split with gap and expanding window support
     """
-    # Get pipeline_run_id and step for propagation
+    # Get invocation_id for propagation
     ti = context['ti']
-    pipeline_run_id = ti.xcom_pull(task_ids='raw_data_load', key='pipeline_run_id')
-    current_step = ti.xcom_pull(task_ids='eda_task', key='pipeline_step') or 0
-    current_step += 1
-    
+    invocation_id = ti.xcom_pull(task_ids='raw_data_load', key='invocation_id')
+
     # Reload data
     raw_path = config.DATA.get("RAW_PATH_FILE")
     df = pd.read_csv(raw_path)
@@ -312,15 +303,15 @@ def split_data(**context):
         print(f"Test set: {test_df.shape} saved to {test_path}")
         
         # Log datasets to MLflow for versioning
-        mlflow_tracking_uri = config.MLFLOW.get("MLFLOW_TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
         logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
         
         # Get pipeline run ID for traceability (step already incremented at function start)
         dag_run_id = context.get('dag_run').run_id
-        
-        run_name = f"{pipeline_run_id}_{current_step:02d}_Data_Split"
-        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id, "airflow_dag_run_id": dag_run_id, "pipeline_run_id": pipeline_run_id, "pipeline_step": str(current_step)}
+
+        run_name = "D1S2_Data_Split"
+        tags = {"task_type": "data_split", "split_type": "simple", "dag_id": context.get('dag').dag_id, "airflow_dag_run_id": dag_run_id, "invocation_id": invocation_id, "pipeline_step": "D1S2"}
         
         try:
             logger.start_run(run_name=run_name, tags=tags)
@@ -335,14 +326,13 @@ def split_data(**context):
                 logger.end_run(status="FAILED")
         
         # Push metadata to XCom
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_step', value=current_step)
+        context['ti'].xcom_push(key='invocation_id', value=invocation_id)
         context['ti'].xcom_push(key='split_type', value='simple')
         context['ti'].xcom_push(key='train_shape', value=train_df.shape)
         context['ti'].xcom_push(key='test_shape', value=test_df.shape)
         context['ti'].xcom_push(key='train_path', value=train_path)
         context['ti'].xcom_push(key='test_path', value=test_path)
-        
+
         return f"Simple split complete: train={train_df.shape}, test={test_df.shape}"
         
     elif fold_type == "kfold":
@@ -370,12 +360,11 @@ def split_data(**context):
             print(f"Fold {fold_idx}: train={train_fold_df.shape}, val={val_fold_df.shape}")
         
         # Push metadata to XCom
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_step', value=current_step)
+        context['ti'].xcom_push(key='invocation_id', value=invocation_id)
         context['ti'].xcom_push(key='split_type', value='kfold')
         context['ti'].xcom_push(key='num_folds', value=num_folds)
         context['ti'].xcom_push(key='fold_paths', value=fold_paths)
-        
+
         return f"K-Fold split complete: {num_folds} folds created"
         
     elif fold_type == "stratified":
@@ -404,13 +393,11 @@ def split_data(**context):
             fold_paths.append({"train": train_fold_path, "val": val_fold_path})
             print(f"Fold {fold_idx}: train={train_fold_df.shape}, val={val_fold_df.shape}")
         
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_step', value=current_step)
+        context['ti'].xcom_push(key='invocation_id', value=invocation_id)
         context['ti'].xcom_push(key='split_type', value='stratified')
         context['ti'].xcom_push(key='num_folds', value=num_folds)
         context['ti'].xcom_push(key='fold_paths', value=fold_paths)
-        
+
         return f"Stratified K-Fold split complete: {num_folds} folds created"
         
     elif fold_type == "timeseries":
@@ -480,15 +467,13 @@ def split_data(**context):
                 fold_paths.append({"train": train_fold_path, "val": val_fold_path})
                 print(f"Fold {fold_idx} (sliding): train[{train_start}:{train_end}], gap[{train_end}:{val_start}], val[{val_start}:{val_end}]")
         
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_run_id', value=pipeline_run_id)
-        context['ti'].xcom_push(key='pipeline_step', value=current_step)
+        context['ti'].xcom_push(key='invocation_id', value=invocation_id)
         context['ti'].xcom_push(key='split_type', value='timeseries')
         context['ti'].xcom_push(key='num_folds', value=len(fold_paths))
         context['ti'].xcom_push(key='fold_paths', value=fold_paths)
         context['ti'].xcom_push(key='ts_gap', value=ts_gap)
         context['ti'].xcom_push(key='ts_expanding', value=ts_expanding)
-        
+
         return f"Time Series split complete: {len(fold_paths)} folds created (gap={ts_gap}, expanding={ts_expanding})"
     
     else:

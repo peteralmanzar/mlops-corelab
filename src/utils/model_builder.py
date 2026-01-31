@@ -45,8 +45,8 @@ class ModelBuilder:
     def __init__(self, config: Config = None):
         self.config = config or Config.load()
         self.mlflow_logger = MLFlowLogger(
-            tracking_uri=self.config.MLFLOW.get("MLFLOW_TRACKING_URI"),
-            experiment_name=self.config.MLFLOW.get("MLFLOW_EXPERIMENT_NAME")
+            tracking_uri=self.config.MLFLOW.get("TRACKING_URI"),
+            experiment_name=self.config.MLFLOW.get("EXPERIMENT_NAME")
         )
 
     def _resolve_optimizer(self, optimizer_str: str):
