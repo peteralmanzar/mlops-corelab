@@ -384,7 +384,7 @@
             }
             else
             {
-                <button class="btn btn-success" @onclick="GenerateExperiment" disabled="@IsGenerating">
+                <button class="btn btn-success" @onclick="GenerateExperiment" disabled="@(IsGenerating || GenerationComplete)">
                     @if (IsGenerating)
                     {
                         <span class="spinner-border spinner-border-sm me-2"></span>
@@ -415,6 +415,7 @@
     private string ExperimentName { get; set; } = "";
     private ExperimentConfig Config { get; set; } = new();
     private bool IsGenerating { get; set; }
+    private bool GenerationComplete { get; set; }
     private string? ErrorMessage { get; set; }
     private string? SuccessMessage { get; set; }
     private ExperimentTemplate? DefaultTemplate { get; set; }
@@ -600,10 +601,9 @@
                 };
                 await TemplateService.CreateExperimentAsync(experiment);
 
-                SuccessMessage = $"Experiment '{ExperimentName}' generated successfully!";
+                GenerationComplete = true;
 
-                // Redirect to experiments list after short delay
-                await Task.Delay(1000);
+                // Redirect to experiments list immediately
                 Navigation.NavigateTo("/experiments");
             }
             else
