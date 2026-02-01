@@ -71,7 +71,7 @@ def load_model_metadata(**context):
             run_id=upstream_run_id
         )
 
-    # Strategy 2: Fallback to include_prior_dates
+    # Strategy 2: Fallback to include_prior_dates - get MOST RECENT by version
     if not registration_info:
         registration_info_list = ti.xcom_pull(
             dag_id='03_dag_model',
@@ -80,7 +80,17 @@ def load_model_metadata(**context):
             include_prior_dates=True
         )
         if registration_info_list:
-            registration_info = registration_info_list[0] if isinstance(registration_info_list, list) else registration_info_list
+            if isinstance(registration_info_list, list) and len(registration_info_list) > 0:
+                # Sort by version number descending to get the most recent
+                sorted_info = sorted(
+                    registration_info_list,
+                    key=lambda x: int(x.get('model_version', 0)),
+                    reverse=True
+                )
+                registration_info = sorted_info[0]
+                print(f"XCom fallback: selected most recent version {registration_info.get('model_version')} from {len(registration_info_list)} available")
+            else:
+                registration_info = registration_info_list
 
     # Strategy 3: Query MLflow Model Registry directly
     if not registration_info:
