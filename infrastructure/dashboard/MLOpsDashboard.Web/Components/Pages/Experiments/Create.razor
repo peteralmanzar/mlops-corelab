@@ -602,9 +602,10 @@
                 await TemplateService.CreateExperimentAsync(experiment);
 
                 GenerationComplete = true;
+                StateHasChanged();
 
-                // Redirect to experiments list immediately
-                Navigation.NavigateTo("/experiments");
+                // Redirect to experiments list immediately (forceLoad ensures navigation)
+                Navigation.NavigateTo("/experiments", forceLoad: true);
             }
             else
             {

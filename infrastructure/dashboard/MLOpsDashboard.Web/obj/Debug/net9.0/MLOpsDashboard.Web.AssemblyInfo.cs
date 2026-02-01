@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MLOpsDashboard.Web")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+39a56fa0db30e931e0ffbfe092a717b20eee678b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+e77cc81475ebf6582e43cb513b56296b2cf0ecdd")]
 [assembly: System.Reflection.AssemblyProductAttribute("MLOpsDashboard.Web")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MLOpsDashboard.Web")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
