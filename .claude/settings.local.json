@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker system:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker logs:*)"
+    ]
+  }
+}

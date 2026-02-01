@@ -15,3 +15,6 @@ TRANSFORMED_DATA_ASSET = Dataset("file://data/processed/transformed_data.csv")
 
 # Model training assets
 TRAINED_MODEL_ASSET = Dataset("mlflow://models/ml_pipeline_model")
+
+# Model serving assets
+PROMOTED_MODEL_ASSET = Dataset("mlflow://models/ml_pipeline_model@champion")

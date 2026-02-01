@@ -8,6 +8,7 @@ and artifacts for data exploration and model training tasks.
 
 import mlflow
 import mlflow.sklearn
+from mlflow import MlflowClient
 import pandas as pd
 import numpy as np
 from typing import Dict, Any, Optional, List, Union
@@ -573,8 +574,135 @@ class MLFlowLogger:
         import mlflow.keras
         
         loaded_model = mlflow.keras.load_model(model_uri)
-        
+
         print(f"Loaded Keras model from: {model_uri}")
         print(f"  Model type: {type(loaded_model).__name__}")
-        
+
         return loaded_model
+
+    # ---- Model Registry and Alias Management ----
+
+    def get_client(self) -> MlflowClient:
+        """
+        Get an MlflowClient instance for advanced registry operations.
+
+        Returns:
+            MlflowClient connected to the tracking URI
+        """
+        return MlflowClient(tracking_uri=self.tracking_uri)
+
+    def get_model_version_by_alias(self, model_name: str, alias: str) -> Optional[Dict[str, Any]]:
+        """
+        Get model version info by alias (e.g., 'champion', 'challenger').
+
+        Args:
+            model_name: Registered model name
+            alias: Alias name (e.g., 'champion')
+
+        Returns:
+            Dictionary with version info or None if alias doesn't exist
+        """
+        client = self.get_client()
+        try:
+            mv = client.get_model_version_by_alias(name=model_name, alias=alias)
+            return {
+                'version': mv.version,
+                'run_id': mv.run_id,
+                'status': mv.status,
+                'creation_timestamp': mv.creation_timestamp,
+                'tags': dict(mv.tags) if mv.tags else {}
+            }
+        except Exception as e:
+            print(f"Alias '{alias}' not found for model '{model_name}': {e}")
+            return None
+
+    def get_model_version_metrics(self, run_id: str) -> Dict[str, float]:
+        """
+        Retrieve all logged metrics from a specific MLflow run.
+
+        Args:
+            run_id: MLflow run ID
+
+        Returns:
+            Dictionary of metric names to values
+        """
+        client = self.get_client()
+        run = client.get_run(run_id)
+        return dict(run.data.metrics)
+
+    def get_latest_model_version(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the latest registered model version.
+
+        Args:
+            model_name: Registered model name
+
+        Returns:
+            Dictionary with version info or None if no versions exist
+        """
+        client = self.get_client()
+        try:
+            versions = client.search_model_versions(f"name='{model_name}'")
+            if not versions:
+                return None
+            # Sort by version number (descending) and return latest
+            latest = max(versions, key=lambda v: int(v.version))
+            return {
+                'version': latest.version,
+                'run_id': latest.run_id,
+                'status': latest.status,
+                'creation_timestamp': latest.creation_timestamp,
+                'tags': dict(latest.tags) if latest.tags else {},
+                'aliases': list(latest.aliases) if hasattr(latest, 'aliases') and latest.aliases else []
+            }
+        except Exception as e:
+            print(f"Error getting latest version for '{model_name}': {e}")
+            return None
+
+    def set_model_alias(self, model_name: str, alias: str, version: str) -> bool:
+        """
+        Set an alias on a specific model version.
+
+        Args:
+            model_name: Registered model name
+            alias: Alias to set (e.g., 'champion', 'challenger')
+            version: Model version number
+
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        try:
+            client.set_registered_model_alias(
+                name=model_name,
+                alias=alias,
+                version=version
+            )
+            print(f"Set alias '{alias}' on {model_name} version {version}")
+            return True
+        except Exception as e:
+            print(f"Error setting alias '{alias}': {e}")
+            return False
+
+    def delete_model_alias(self, model_name: str, alias: str) -> bool:
+        """
+        Remove an alias from a model.
+
+        Args:
+            model_name: Registered model name
+            alias: Alias to remove
+
+        Returns:
+            True if successful, False otherwise
+        """
+        client = self.get_client()
+        try:
+            client.delete_registered_model_alias(
+                name=model_name,
+                alias=alias
+            )
+            print(f"Deleted alias '{alias}' from {model_name}")
+            return True
+        except Exception as e:
+            print(f"Error deleting alias '{alias}': {e}")
+            return False

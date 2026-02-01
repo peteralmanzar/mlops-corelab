@@ -58,7 +58,7 @@ class Config:
             
             # Deep merge for nested dicts
             for k, v in data.items():
-                if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW"):
+                if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW", "PROMOTION"):
                     if isinstance(v, dict) and isinstance(merged.get(k), dict):
                         merged.setdefault(k, {}).update(v)
                     else:
