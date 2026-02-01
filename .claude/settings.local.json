@@ -4,7 +4,10 @@
       "Bash(docker system:*)",
       "Bash(docker compose build:*)",
       "Bash(docker logs:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(dotnet build:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker compose restart:*)"
     ]
   }
 }

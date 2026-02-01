@@ -1,0 +1,460 @@
+@page "/experiments/{Id:guid}/edit"
+@using System.Text.Json
+@using MLOpsDashboard.Core.Models
+@using MLOpsDashboard.Core.Models.ConfigSections
+@using MLOpsDashboard.Web.Services
+@inject TemplateService TemplateService
+@inject DagGeneratorService DagGenerator
+@inject NavigationManager Navigation
+
+<PageTitle>Edit Experiment - @(Experiment?.Name ?? "Loading...")</PageTitle>
+
+<div class="container">
+    @if (IsLoading)
+    {
+        <div class="text-center py-5">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    }
+    else if (Experiment == null)
+    {
+        <div class="alert alert-danger">Experiment not found.</div>
+        <a href="/experiments" class="btn btn-primary">Back to Experiments</a>
+    }
+    else
+    {
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>Edit Experiment: @Experiment.Name</h2>
+            <a href="/experiments" class="btn btn-outline-secondary">Back to List</a>
+        </div>
+
+        <div class="row">
+            <!-- Left: Form Editor -->
+            <div class="col-lg-6">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <ul class="nav nav-tabs card-header-tabs">
+                            <li class="nav-item">
+                                <button class="nav-link @(ActiveTab == "data" ? "active" : "")" @onclick='() => ActiveTab = "data"'>Data</button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(ActiveTab == "preprocessing" ? "active" : "")" @onclick='() => ActiveTab = "preprocessing"'>Preprocessing</button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(ActiveTab == "model" ? "active" : "")" @onclick='() => ActiveTab = "model"'>Model</button>
+                            </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(ActiveTab == "promotion" ? "active" : "")" @onclick='() => ActiveTab = "promotion"'>Promotion</button>
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="card-body">
+                        @if (ActiveTab == "data")
+                        {
+                            <h5>Data Configuration</h5>
+                            <div class="mb-3">
+                                <label class="form-label">Data Source Path</label>
+                                <input type="text" class="form-control" @bind="Config.Data.RawPathFile" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Split Type</label>
+                                <select class="form-select" @bind="Config.Data.FoldType">
+                                    <option value="">Simple Split</option>
+                                    <option value="kfold">K-Fold</option>
+                                    <option value="stratified">Stratified K-Fold</option>
+                                    <option value="timeseries">Time Series</option>
+                                </select>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Test Split Ratio</label>
+                                    <input type="number" class="form-control" @bind="Config.Data.TrainTestSplit" step="0.05" />
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Number of Folds</label>
+                                    <input type="number" class="form-control" @bind="Config.Data.NumFolds" />
+                                </div>
+                            </div>
+                            @if (Config.Data.FoldType == "stratified")
+                            {
+                                <div class="mb-3">
+                                    <label class="form-label">Stratify Column</label>
+                                    <input type="text" class="form-control" @bind="Config.Data.StratifyColumn" />
+                                </div>
+                            }
+                        }
+                        else if (ActiveTab == "preprocessing")
+                        {
+                            <h5>Preprocessing Pipeline</h5>
+                            <div class="mb-3">
+                                <label class="form-label">Features Path</label>
+                                <input type="text" class="form-control" @bind="Config.Preprocessing.FeaturesPath" />
+                            </div>
+
+                            <h6>Pipeline Steps</h6>
+                            <div class="mb-3">
+                                <label class="form-label">Imputer Columns</label>
+                                <input type="text" class="form-control" @bind="ImputerColumnsText" placeholder="comma-separated" />
+                                <div class="row mt-2">
+                                    <div class="col">
+                                        <select class="form-select form-select-sm" @bind="Imputer.NumericStrategy">
+                                            <option value="mean">Numeric: Mean</option>
+                                            <option value="median">Numeric: Median</option>
+                                        </select>
+                                    </div>
+                                    <div class="col">
+                                        <select class="form-select form-select-sm" @bind="Imputer.CategoricalStrategy">
+                                            <option value="mode">Cat: Mode</option>
+                                            <option value="constant">Cat: Constant</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Scaler Columns</label>
+                                <input type="text" class="form-control" @bind="ScalerColumnsText" placeholder="comma-separated" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">OneHot Columns</label>
+                                <input type="text" class="form-control" @bind="OneHotColumnsText" placeholder="comma-separated" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Drop Columns</label>
+                                <input type="text" class="form-control" @bind="DropColumnsText" placeholder="comma-separated" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Date Split Columns</label>
+                                <input type="text" class="form-control" @bind="DateSplitColumnsText" placeholder="comma-separated" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Index Column</label>
+                                <input type="text" class="form-control" @bind="Index.Column" />
+                            </div>
+                            <div class="row mb-3">
+                                <div class="col">
+                                    <label class="form-label">Sequencer Column</label>
+                                    <input type="text" class="form-control" @bind="Sequencer.Column" />
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">Sequence Length</label>
+                                    <input type="number" class="form-control" @bind="Sequencer.SequenceLength" />
+                                </div>
+                            </div>
+                        }
+                        else if (ActiveTab == "model")
+                        {
+                            <h5>Model Configuration</h5>
+                            <div class="mb-3">
+                                <label class="form-label">Target Column(s)</label>
+                                <input type="text" class="form-control" @bind="LabelColumnsText" />
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Epochs</label>
+                                    <input type="number" class="form-control" @bind="Config.Model.Epochs" />
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Batch Size</label>
+                                    <input type="number" class="form-control" @bind="Config.Model.BatchSize" />
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Optimizer</label>
+                                    <select class="form-select" @bind="Config.Model.Optimizer">
+                                        <option value="adam">Adam</option>
+                                        <option value="sgd">SGD</option>
+                                        <option value="rmsprop">RMSprop</option>
+                                        <option value="adamax">Adamax</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Early Stopping Patience</label>
+                                    <input type="number" class="form-control" @bind="Config.Model.EarlyStoppingPatience" />
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Validation Split</label>
+                                <input type="number" class="form-control" @bind="Config.Model.ValidationSplit" step="0.05" />
+                            </div>
+                        }
+                        else if (ActiveTab == "promotion")
+                        {
+                            <h5>Promotion Settings</h5>
+                            <div class="mb-3">
+                                <label class="form-label">Model Name</label>
+                                <input type="text" class="form-control" @bind="Config.Promotion.ModelName" />
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Comparison Metric</label>
+                                <select class="form-select" @bind="Config.Promotion.ComparisonMetric">
+                                    <option value="test_accuracy">Test Accuracy</option>
+                                    <option value="test_loss">Test Loss</option>
+                                    <option value="val_accuracy">Validation Accuracy</option>
+                                    <option value="val_loss">Validation Loss</option>
+                                </select>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input type="checkbox" class="form-check-input" @bind="Config.Promotion.HigherIsBetter" id="higherIsBetter" />
+                                <label class="form-check-label" for="higherIsBetter">Higher is Better</label>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Min Improvement Threshold</label>
+                                <input type="number" class="form-control" @bind="Config.Promotion.MinImprovementThreshold" step="0.01" />
+                            </div>
+                            <div class="form-check mb-3">
+                                <input type="checkbox" class="form-check-input" @bind="Config.Promotion.AutoPromoteFirstModel" id="autoPromote" />
+                                <label class="form-check-label" for="autoPromote">Auto-promote First Model</label>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" @onclick="SaveAndRegenerate" disabled="@IsSaving">
+                        @if (IsSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2"></span>
+                        }
+                        Save & Regenerate DAGs
+                    </button>
+                    <button class="btn btn-outline-secondary" @onclick="ResetChanges">Reset Changes</button>
+                </div>
+            </div>
+
+            <!-- Right: JSON Preview -->
+            <div class="col-lg-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between">
+                        <span>Configuration JSON</span>
+                        <button class="btn btn-sm btn-outline-secondary" @onclick="CopyJson">Copy</button>
+                    </div>
+                    <div class="card-body">
+                        <pre class="bg-dark text-light p-3 rounded" style="max-height: 600px; overflow: auto; font-size: 0.85rem;">@ConfigJson</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(ErrorMessage))
+        {
+            <div class="alert alert-danger mt-3">@ErrorMessage</div>
+        }
+        @if (!string.IsNullOrEmpty(SuccessMessage))
+        {
+            <div class="alert alert-success mt-3">@SuccessMessage</div>
+        }
+    }
+</div>
+
+@code {
+    [Parameter]
+    public Guid Id { get; set; }
+
+    private GeneratedExperiment? Experiment { get; set; }
+    private ExperimentConfig Config { get; set; } = new();
+    private ExperimentConfig? OriginalConfig { get; set; }
+    private bool IsLoading { get; set; } = true;
+    private bool IsSaving { get; set; }
+    private string? ErrorMessage { get; set; }
+    private string? SuccessMessage { get; set; }
+    private string ActiveTab { get; set; } = "data";
+
+    // Pipeline step instances
+    private ImputerStep Imputer { get; set; } = new();
+    private ScalerStep Scaler { get; set; } = new();
+    private OneHotStep OneHot { get; set; } = new();
+    private DropStep Drop { get; set; } = new();
+    private DateSplitStep DateSplit { get; set; } = new();
+    private IndexStep Index { get; set; } = new();
+    private SequencerStep Sequencer { get; set; } = new();
+
+    // Text bindings
+    private string ImputerColumnsText
+    {
+        get => string.Join(", ", Imputer.Columns);
+        set => Imputer.Columns = ParseColumns(value);
+    }
+
+    private string ScalerColumnsText
+    {
+        get => string.Join(", ", Scaler.Columns);
+        set => Scaler.Columns = ParseColumns(value);
+    }
+
+    private string OneHotColumnsText
+    {
+        get => string.Join(", ", OneHot.Columns);
+        set => OneHot.Columns = ParseColumns(value);
+    }
+
+    private string DropColumnsText
+    {
+        get => string.Join(", ", Drop.Columns);
+        set => Drop.Columns = ParseColumns(value);
+    }
+
+    private string DateSplitColumnsText
+    {
+        get => string.Join(", ", DateSplit.Columns);
+        set => DateSplit.Columns = ParseColumns(value);
+    }
+
+    private string LabelColumnsText
+    {
+        get => string.Join(", ", Config.Model.LabelColumns);
+        set => Config.Model.LabelColumns = ParseColumns(value);
+    }
+
+    private static List<string> ParseColumns(string value)
+    {
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
+    }
+
+    private string ConfigJson
+    {
+        get
+        {
+            BuildPipelineSteps();
+            return JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadExperiment();
+    }
+
+    private async Task LoadExperiment()
+    {
+        IsLoading = true;
+        try
+        {
+            Experiment = await TemplateService.GetExperimentByIdAsync(Id);
+            if (Experiment?.ConfigSnapshot != null)
+            {
+                Config = JsonSerializer.Deserialize<ExperimentConfig>(Experiment.ConfigSnapshot.RootElement.GetRawText())
+                    ?? new ExperimentConfig();
+                OriginalConfig = JsonSerializer.Deserialize<ExperimentConfig>(Experiment.ConfigSnapshot.RootElement.GetRawText());
+
+                // Load pipeline steps from config
+                LoadPipelineSteps();
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Failed to load experiment: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    private void LoadPipelineSteps()
+    {
+        foreach (var step in Config.Preprocessing.PipelineSpec.Steps)
+        {
+            switch (step)
+            {
+                case ImputerStep imputer:
+                    Imputer = imputer;
+                    break;
+                case ScalerStep scaler:
+                    Scaler = scaler;
+                    break;
+                case OneHotStep onehot:
+                    OneHot = onehot;
+                    break;
+                case DropStep drop:
+                    Drop = drop;
+                    break;
+                case DateSplitStep dateSplit:
+                    DateSplit = dateSplit;
+                    break;
+                case IndexStep index:
+                    Index = index;
+                    break;
+                case SequencerStep sequencer:
+                    Sequencer = sequencer;
+                    break;
+            }
+        }
+    }
+
+    private void BuildPipelineSteps()
+    {
+        var steps = new List<PipelineStep>
+        {
+            Imputer, Scaler, OneHot, Drop, DateSplit, Index, Sequencer
+        };
+        Config.Preprocessing.PipelineSpec.Steps = steps;
+    }
+
+    private async Task SaveAndRegenerate()
+    {
+        if (Experiment == null) return;
+
+        ErrorMessage = null;
+        SuccessMessage = null;
+        IsSaving = true;
+        StateHasChanged();
+
+        try
+        {
+            BuildPipelineSteps();
+
+            // Regenerate DAG files
+            var result = await DagGenerator.GenerateExperimentAsync(Experiment.Name, Config);
+
+            if (result.Success)
+            {
+                // Update experiment record
+                Experiment.ConfigSnapshot = JsonDocument.Parse(JsonSerializer.Serialize(Config));
+                Experiment.UpdatedAt = DateTime.UtcNow;
+                Experiment.Status = "generated";
+                await TemplateService.UpdateExperimentAsync(Experiment);
+
+                SuccessMessage = "Configuration saved and DAGs regenerated successfully!";
+                OriginalConfig = JsonSerializer.Deserialize<ExperimentConfig>(JsonSerializer.Serialize(Config));
+            }
+            else
+            {
+                ErrorMessage = $"Failed to regenerate DAGs: {result.ErrorMessage}";
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            IsSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ResetChanges()
+    {
+        if (OriginalConfig != null)
+        {
+            Config = JsonSerializer.Deserialize<ExperimentConfig>(JsonSerializer.Serialize(OriginalConfig))
+                ?? new ExperimentConfig();
+            LoadPipelineSteps();
+            StateHasChanged();
+        }
+    }
+
+    private async Task CopyJson()
+    {
+        // Note: In a real app, you'd use JS interop for clipboard access
+        // For now, just show a message
+        SuccessMessage = "Copy to clipboard requires JavaScript interop (not implemented)";
+        await Task.CompletedTask;
+    }
+}

@@ -1,16 +1,12 @@
 {
-  "config_version": 1,
   "MLFLOW": {
     "TRACKING_URI": "http://mlflow:5000",
     "EXPERIMENT_NAME": "ml_pipeline"
   },
   "RANDOM_SEED": 42,
-  "ALERT_EMAIL": ["admin@example.com"],
-  "SLACK_WEBHOOK": null,
   "DEFAULT_DAG_ARGS": {
     "owner": "data-science-team",
     "depends_on_past": false,
-    "email": ["admin@example.com"],
     "email_on_failure": true,
     "email_on_retry": false,
     "retries": 2,
@@ -20,11 +16,6 @@
     "RAW_PATH_FILE": "/opt/airflow/data/train.csv",
     "PROCESSED_PATH": "/opt/airflow/data/processed",
     "TRAIN_TEST_SPLIT": 0.2,
-    "VALIDATION_RULES": {
-      "max_null_percentage": 0.1,
-      "min_rows": 100,
-      "required_columns": []
-    },
     "FOLD_TYPE": "stratified",
     "NUM_FOLDS": 5,
     "KFOLD_SHUFFLE": true,
@@ -40,7 +31,7 @@
       "steps": [
         {"dateSplit": {"columns": [], "dropColumns": true}},
         {"imputer": {"columns": ["Age"], "numeric_strategy": "median"}},
-        {"scaler": {"columns": ["Pclass", "SibSp","Age", "Parch", "Fare"]}},
+        {"scaler": {"columns": ["Pclass", "SibSp", "Age", "Parch", "Fare"]}},
         {"onehot": {"columns": ["Sex"]}},
         {"drop": {"columns": ["PassengerId", "Name", "Ticket", "Cabin", "Embarked"]}},
         {"index": {"column": ""}},
@@ -55,19 +46,7 @@
     "BATCH_SIZE": 50,
     "OPTIMIZER": "adam",
     "EARLY_STOPPING_PATIENCE": 10,
-    "VALIDATION_SPLIT": 0.2,
-    "PARAMS": {
-      "n_estimators": 100,
-      "max_depth": 10,
-      "random_state": 42
-    },
-    "VALIDATION_THRESHOLDS": {
-      "min_accuracy": 0.75,
-      "min_precision": 0.7,
-      "min_recall": 0.7,
-      "min_f1": 0.7,
-      "max_inference_time_ms": 1000
-    }
+    "VALIDATION_SPLIT": 0.2
   },
   "PROMOTION": {
     "MODEL_NAME": "ml_pipeline_model",

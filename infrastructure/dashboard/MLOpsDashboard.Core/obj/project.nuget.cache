@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "P0F5BuRyFTw=",
+  "success": true,
+  "projectFilePath": "C:\\Repos\\mlops-corelab\\infrastructure\\dashboard\\MLOpsDashboard.Core\\MLOpsDashboard.Core.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\peter\\.nuget\\packages\\microsoft.netcore.app.ref\\9.0.11\\microsoft.netcore.app.ref.9.0.11.nupkg.sha512",
+    "C:\\Users\\peter\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\9.0.11\\microsoft.windowsdesktop.app.ref.9.0.11.nupkg.sha512",
+    "C:\\Users\\peter\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\9.0.11\\microsoft.aspnetcore.app.ref.9.0.11.nupkg.sha512"
+  ],
+  "logs": []
+}

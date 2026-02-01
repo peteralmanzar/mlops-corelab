@@ -427,7 +427,39 @@ services:
       start_period: 45s
     restart: unless-stopped
 
-  # ---- Homepage (Service Dashboard) ----
+  # ---- MLOps Dashboard (.NET Blazor Server) ----
+  # Replaces the static homepage with a dynamic experiment management dashboard
+  mlops-dashboard:
+    build:
+      context: ./infrastructure/dashboard
+      dockerfile: Dockerfile
+    container_name: mlops-dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:3001
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=mlops_dashboard;Username=dashboard;Password=dashboard_pwd
+      Mlflow__BaseUrl: http://mlflow:5000
+      Airflow__BaseUrl: http://airflow-apiserver:8080
+      DagOutput__Path: /app/dags
+    volumes:
+      - ./src/dags:/app/dags:rw
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---- Homepage (Service Dashboard) - DEPRECATED ----
+  # Kept for reference, will be removed once mlops-dashboard is fully operational
   # Documentation: https://gethomepage.dev/configs/
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
@@ -438,6 +470,8 @@ services:
       - ./infrastructure/homepage:/app/config
       - ./logs/homepage_logs:/app/logs
     restart: unless-stopped
+    profiles:
+      - legacy  # Only starts with: docker-compose --profile legacy up
 
 volumes:
   postgres-data:

@@ -1,0 +1,12 @@
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\bin\Debug\net9.0\MLOpsDashboard.Core.deps.json
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\bin\Debug\net9.0\MLOpsDashboard.Core.dll
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\bin\Debug\net9.0\MLOpsDashboard.Core.pdb
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.AssemblyInfoInputs.cache
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.AssemblyInfo.cs
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.csproj.CoreCompileInputs.cache
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.sourcelink.json
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.dll
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\refint\MLOpsDashboard.Core.dll
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\MLOpsDashboard.Core.pdb
+C:\Repos\mlops-corelab\infrastructure\dashboard\MLOpsDashboard.Core\obj\Debug\net9.0\ref\MLOpsDashboard.Core.dll

@@ -1,0 +1,13 @@
+# Airflow DAG Ignore File
+# Files and directories matching these patterns will not be scanned for DAGs
+# Note: Airflow uses gitignore-style patterns, not regex
+
+# Template factory modules (these contain factory functions, not DAG definitions)
+templates/
+
+# Config files for experiments (JSON files, not Python DAGs)
+configs/
+
+# Python cache
+__pycache__/
+*.pyc

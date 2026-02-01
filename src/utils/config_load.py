@@ -38,36 +38,66 @@ class Config:
         return p
 
     @classmethod
-    def load(cls) -> "Config":
-        # Load base configuration from config.model.json
-        model_cfg_path = cls._model_config_path()
-        if not model_cfg_path.exists():
-            raise FileNotFoundError(f"Model config file not found: {model_cfg_path}")
+    def load(cls, config_path: str = None) -> "Config":
+        """Load configuration from config files.
 
-        with open(model_cfg_path, "r", encoding="utf-8") as f:
-            merged = json.load(f)
-        
-        # Remove comment field if present
-        merged.pop("_comment", None)
+        Args:
+            config_path: Optional path to a custom config.json file.
+                        If provided, loads directly from this path (for experiment-specific configs).
+                        If None, uses the default config.model.json + config.json merge behavior.
+        """
+        if config_path:
+            # Load directly from custom config path (experiment-specific)
+            config_file = Path(config_path)
+            if not config_file.exists():
+                raise FileNotFoundError(f"Config file not found: {config_path}")
 
-        # Overlay with user configuration from config.json (optional)
-        cfg_path = cls._config_path()
-        if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            # Deep merge for nested dicts
-            for k, v in data.items():
-                if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW", "PROMOTION"):
-                    if isinstance(v, dict) and isinstance(merged.get(k), dict):
-                        merged.setdefault(k, {}).update(v)
+            with open(config_file, "r", encoding="utf-8") as f:
+                merged = json.load(f)
+
+            merged.pop("_comment", None)
+
+            # Ensure experiment configs have required DEFAULT_DAG_ARGS defaults
+            merged.setdefault("DEFAULT_DAG_ARGS", {})
+            merged["DEFAULT_DAG_ARGS"].setdefault("retry_delay_seconds", 300)
+            merged["DEFAULT_DAG_ARGS"].setdefault("retries", 1)
+            merged["DEFAULT_DAG_ARGS"].setdefault("owner", "mlops")
+            merged["DEFAULT_DAG_ARGS"].setdefault("depends_on_past", False)
+            merged["DEFAULT_DAG_ARGS"].setdefault("email_on_failure", False)
+            merged["DEFAULT_DAG_ARGS"].setdefault("email_on_retry", False)
+
+            logger.info("Loaded experiment configuration from %s", config_path)
+        else:
+            # Default behavior: merge config.model.json with config.json
+            # Load base configuration from config.model.json
+            model_cfg_path = cls._model_config_path()
+            if not model_cfg_path.exists():
+                raise FileNotFoundError(f"Model config file not found: {model_cfg_path}")
+
+            with open(model_cfg_path, "r", encoding="utf-8") as f:
+                merged = json.load(f)
+
+            # Remove comment field if present
+            merged.pop("_comment", None)
+
+            # Overlay with user configuration from config.json (optional)
+            cfg_path = cls._config_path()
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                # Deep merge for nested dicts
+                for k, v in data.items():
+                    if k in ("DEFAULT_DAG_ARGS", "DATA", "PREPROCESSING", "MODEL", "MLFLOW", "PROMOTION"):
+                        if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                            merged.setdefault(k, {}).update(v)
+                        else:
+                            merged[k] = v
                     else:
                         merged[k] = v
-                else:
-                    merged[k] = v
-            logger.info("Loaded user configuration from %s", cfg_path)
-        else:
-            logger.warning("User config file not found at %s, using model defaults only", cfg_path)
+                logger.info("Loaded user configuration from %s", cfg_path)
+            else:
+                logger.warning("User config file not found at %s, using model defaults only", cfg_path)
 
         # Validation: critical fields
         # 1) MLFLOW.TRACKING_URI
@@ -105,11 +135,6 @@ class Config:
         if "MODEL" in merged and isinstance(merged["MODEL"], dict):
             if "ARTIFACTS_PATH" in merged["MODEL"]:
                 merged["MODEL"]["ARTIFACTS_PATH"] = cls._normalize_path(merged["MODEL"]["ARTIFACTS_PATH"])
-
-        # Ensure email is list
-        email = merged.get("ALERT_EMAIL")
-        if isinstance(email, str):
-            merged["ALERT_EMAIL"] = [email]
 
         # Normalize LABEL_COLUMNS in MODEL: accept string or list, ensure list of strings
         if "MODEL" in merged and isinstance(merged["MODEL"], dict):
@@ -167,9 +192,11 @@ class Config:
         except Exception:
             pass
 
+        # Use the appropriate path for logging
+        log_path = config_path if config_path else cfg_path
         logger.info(
             "Loaded configuration from %s:\n%s",
-            cfg_path,
+            log_path,
             json.dumps(log_copy, indent=2, default=str)
         )
 
