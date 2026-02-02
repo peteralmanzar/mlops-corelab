@@ -51,6 +51,9 @@
                                        class="btn btn-outline-primary">
                                         Airflow
                                     </a>
+                                    <button class="btn btn-outline-danger" @onclick="() => ShowDeleteConfirmation(exp)">
+                                        Delete
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -59,14 +62,74 @@
             </table>
         </div>
     }
+
+    @if (_showDeleteModal && _experimentToDelete != null)
+    {
+        <div class="modal fade show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Confirm Delete</h5>
+                        <button type="button" class="btn-close" @onclick="HideDeleteConfirmation"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Are you sure you want to delete experiment <strong>@_experimentToDelete.Name</strong>?</p>
+                        <p class="text-muted small">This will remove the experiment and all associated DAG files.</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" @onclick="HideDeleteConfirmation" disabled="@_isDeleting">Cancel</button>
+                        <button type="button" class="btn btn-danger" @onclick="DeleteExperiment" disabled="@_isDeleting">
+                            @if (_isDeleting)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            }
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
 </div>
 
 @code {
     private List<GeneratedExperiment>? _experiments;
+    private bool _showDeleteModal;
+    private GeneratedExperiment? _experimentToDelete;
+    private bool _isDeleting;
 
     protected override async Task OnInitializedAsync()
     {
         _experiments = await TemplateService.GetAllExperimentsAsync();
+    }
+
+    private void ShowDeleteConfirmation(GeneratedExperiment experiment)
+    {
+        _experimentToDelete = experiment;
+        _showDeleteModal = true;
+    }
+
+    private void HideDeleteConfirmation()
+    {
+        _showDeleteModal = false;
+        _experimentToDelete = null;
+    }
+
+    private async Task DeleteExperiment()
+    {
+        if (_experimentToDelete == null) return;
+
+        _isDeleting = true;
+        try
+        {
+            await TemplateService.DeleteExperimentAsync(_experimentToDelete.Id);
+            _experiments = await TemplateService.GetAllExperimentsAsync();
+        }
+        finally
+        {
+            _isDeleting = false;
+            HideDeleteConfirmation();
+        }
     }
 
     private string GetStatusBadge(string status) => status switch

@@ -214,3 +214,21 @@ credentials/
 *.key
 *.pem
 *.cert
+
+# .NET
+bin/
+obj/
+Debug/
+Release/
+*.dll
+*.exe
+*.pdb
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+project.lock.json
+project.fragment.lock.json
+artifacts/
+**/Properties/launchSettings.json
+**/settings.local.json

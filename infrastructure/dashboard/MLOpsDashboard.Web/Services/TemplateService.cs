@@ -10,11 +10,13 @@ namespace MLOpsDashboard.Web.Services;
 public class TemplateService
 {
     private readonly DashboardDbContext _context;
+    private readonly DagGeneratorService _dagGenerator;
     private readonly ILogger<TemplateService> _logger;
 
-    public TemplateService(DashboardDbContext context, ILogger<TemplateService> logger)
+    public TemplateService(DashboardDbContext context, DagGeneratorService dagGenerator, ILogger<TemplateService> logger)
     {
         _context = context;
+        _dagGenerator = dagGenerator;
         _logger = logger;
     }
 
@@ -162,5 +164,26 @@ public class TemplateService
         await _context.SaveChangesAsync();
         _logger.LogInformation("Updated experiment: {Name}", experiment.Name);
         return experiment;
+    }
+
+    /// <summary>
+    /// Delete a generated experiment and its associated DAG files.
+    /// </summary>
+    public async Task<bool> DeleteExperimentAsync(Guid id)
+    {
+        var experiment = await _context.GeneratedExperiments.FindAsync(id);
+
+        if (experiment == null)
+            return false;
+
+        // Delete DAG files and config
+        await _dagGenerator.DeleteExperimentAsync(experiment.Name);
+
+        // Remove from database
+        _context.GeneratedExperiments.Remove(experiment);
+        await _context.SaveChangesAsync();
+
+        _logger.LogInformation("Deleted experiment: {Name}", experiment.Name);
+        return true;
     }
 }
