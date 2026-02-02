@@ -412,7 +412,16 @@
 
 @code {
     private int CurrentStep { get; set; } = 1;
-    private string ExperimentName { get; set; } = "";
+    private string _experimentName = "";
+    private string ExperimentName
+    {
+        get => _experimentName;
+        set
+        {
+            _experimentName = value;
+            UpdateDefaultPaths();
+        }
+    }
     private ExperimentConfig Config { get; set; } = new();
     private bool IsGenerating { get; set; }
     private bool GenerationComplete { get; set; }
@@ -496,6 +505,16 @@
     {
         // Load default template
         DefaultTemplate = await TemplateService.GetTemplateByNameAsync("baseline_template");
+    }
+
+    private void UpdateDefaultPaths()
+    {
+        if (!string.IsNullOrWhiteSpace(_experimentName))
+        {
+            Config.Data.RawPathFile = $"/opt/airflow/data/{_experimentName}/data.csv";
+            Config.Data.ProcessedPath = $"/opt/airflow/data/{_experimentName}/processed";
+            Config.Preprocessing.FeaturesPath = $"/opt/airflow/data/{_experimentName}/features";
+        }
     }
 
     private string GetStepName(int step) => step switch
