@@ -9,10 +9,12 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 from config_load import Config
 from mlflow_log import MLFlowLogger
+from typing import Optional, Dict, Any
 from model_template import (
     GetModelTemplateMLPRegression,
     GetModelTemplateMLPBinaryClassification,
     GetModelTemplateMLPMultiClassification,
+    build_dynamic_mlp,
     Optimizer as TemplateOptimizer,
 )
 
@@ -65,13 +67,49 @@ class ModelBuilder:
         }
         return mapping.get(opt, TemplateOptimizer.ADAM)
 
-    def build_model_for_training(self, task_type: str, num_features: int, num_classes: int):
+    def build_model_for_training(
+        self,
+        task_type: str,
+        num_features: int,
+        num_classes: int,
+        hyperparams: Optional[Dict[str, Any]] = None
+    ):
         """
         Instantiate a fresh Keras model based on task type and configuration.
+
+        Args:
+            task_type: 'regression', 'binary_classification', or 'multi_classification'
+            num_features: Number of input features
+            num_classes: Number of output classes
+            hyperparams: Optional dict with 'architecture' and 'training' keys from Optuna tuning.
+                         If provided, uses dynamic model building with tuned hyperparameters.
+
+        Returns:
+            Compiled Keras model
         """
         optimizer_str = self.config.MODEL.get("OPTIMIZER", "adam")
         optimizer = self._resolve_optimizer(optimizer_str)
 
+        # If hyperparams provided (from Optuna), use dynamic model builder
+        if hyperparams is not None:
+            arch_params = hyperparams.get('architecture', {})
+            train_params = hyperparams.get('training', {})
+
+            # Override optimizer and learning rate from hyperparams
+            optimizer_str = train_params.get('optimizer', optimizer_str)
+            optimizer = self._resolve_optimizer(optimizer_str)
+            learning_rate = train_params.get('learning_rate', 0.001)
+
+            return build_dynamic_mlp(
+                num_features=num_features,
+                task_type=task_type,
+                num_classes=num_classes,
+                architecture_params=arch_params,
+                optimizer=optimizer,
+                learning_rate=learning_rate
+            )
+
+        # Fallback to original hardcoded templates
         if task_type == 'regression':
             model = GetModelTemplateMLPRegression(numberOfFeatures=num_features, optimizer=optimizer)
         elif task_type == 'binary_classification':

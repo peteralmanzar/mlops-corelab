@@ -125,6 +125,25 @@ public class TemplateService
     }
 
     /// <summary>
+    /// Check if an experiment with the given name already exists.
+    /// </summary>
+    public async Task<bool> ExperimentExistsAsync(string name)
+    {
+        return await _context.GeneratedExperiments
+            .AnyAsync(e => e.Name.ToLower() == name.ToLower());
+    }
+
+    /// <summary>
+    /// Get a generated experiment by name.
+    /// </summary>
+    public async Task<GeneratedExperiment?> GetExperimentByNameAsync(string name)
+    {
+        return await _context.GeneratedExperiments
+            .Include(e => e.Template)
+            .FirstOrDefaultAsync(e => e.Name.ToLower() == name.ToLower());
+    }
+
+    /// <summary>
     /// Create a generated experiment record.
     /// </summary>
     public async Task<GeneratedExperiment> CreateExperimentAsync(GeneratedExperiment experiment)

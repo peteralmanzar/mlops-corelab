@@ -1,8 +1,9 @@
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import tensorflow as tf
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import Conv1D, Conv2D, Dense, Dropout, Flatten, LSTM, MaxPooling1D, MaxPooling2D
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop, Adadelta, Adagrad, Adamax, Nadam, Ftrl
 
 class LayerActivation(Enum):
     RELU = 'relu'
@@ -68,6 +69,105 @@ def resolve_metrics(metrics: List[Metric]):
         Metric.COSINE_SIMILARITY: 'cosine_similarity'
     }
     return [metric_map[m] for m in metrics]
+
+
+def _create_optimizer_with_lr(optimizer: Optimizer, learning_rate: float):
+    """Create Keras optimizer instance with specified learning rate."""
+    optimizer_map = {
+        Optimizer.ADAM: lambda lr: Adam(learning_rate=lr),
+        Optimizer.SGD: lambda lr: SGD(learning_rate=lr),
+        Optimizer.RMS_PROP: lambda lr: RMSprop(learning_rate=lr),
+        Optimizer.ADA_DELTA: lambda lr: Adadelta(learning_rate=lr),
+        Optimizer.ADA_GRAD: lambda lr: Adagrad(learning_rate=lr),
+        Optimizer.ADA_MAX: lambda lr: Adamax(learning_rate=lr),
+        Optimizer.NADAM: lambda lr: Nadam(learning_rate=lr),
+        Optimizer.FTRL: lambda lr: Ftrl(learning_rate=lr),
+    }
+    return optimizer_map.get(optimizer, lambda lr: Adam(learning_rate=lr))(learning_rate)
+
+
+def build_dynamic_mlp(
+    num_features: int,
+    task_type: str,
+    num_classes: int = 1,
+    architecture_params: Optional[Dict[str, Any]] = None,
+    optimizer: Optimizer = Optimizer.ADAM,
+    learning_rate: float = 0.001
+) -> Model:
+    """
+    Build MLP model with dynamic architecture from hyperparameters.
+
+    Args:
+        num_features: Number of input features
+        task_type: 'regression', 'binary_classification', or 'multi_classification'
+        num_classes: Number of output classes
+        architecture_params: Dict with keys:
+            - num_hidden_layers: int
+            - hidden_units: List[int] - units per layer
+            - dropout_rate: float
+            - activation: str
+        optimizer: Optimizer enum
+        learning_rate: Learning rate for optimizer
+
+    Returns:
+        Compiled Keras Model
+    """
+    # Default architecture if not provided
+    if architecture_params is None:
+        architecture_params = {
+            'num_hidden_layers': 2,
+            'hidden_units': [64, 64],
+            'dropout_rate': 0.0,
+            'activation': 'relu'
+        }
+
+    num_layers = architecture_params.get('num_hidden_layers', 2)
+    hidden_units = architecture_params.get('hidden_units', [64] * num_layers)
+    dropout_rate = architecture_params.get('dropout_rate', 0.0)
+    activation = architecture_params.get('activation', 'relu')
+
+    # Ensure hidden_units list matches num_layers
+    if len(hidden_units) < num_layers:
+        hidden_units = hidden_units + [hidden_units[-1]] * (num_layers - len(hidden_units))
+
+    model = Sequential()
+
+    # Input + first hidden layer
+    model.add(Dense(
+        hidden_units[0],
+        activation=activation,
+        input_shape=(num_features,)
+    ))
+    if dropout_rate > 0:
+        model.add(Dropout(dropout_rate))
+
+    # Additional hidden layers
+    for i in range(1, num_layers):
+        model.add(Dense(hidden_units[i], activation=activation))
+        if dropout_rate > 0:
+            model.add(Dropout(dropout_rate))
+
+    # Output layer and compilation based on task type
+    if task_type == 'regression':
+        model.add(Dense(1))
+        loss = LossFunction.MEAN_SQUARED_ERROR.value
+        metrics = resolve_metrics([Metric.MEAN_SQUARED_ERROR])
+    elif task_type == 'binary_classification':
+        model.add(Dense(1, activation=LayerActivation.SIGMOID.value))
+        loss = LossFunction.BINARY_CROSSENTROPY.value
+        metrics = resolve_metrics([Metric.ACCURACY])
+    else:  # multi_classification
+        model.add(Dense(num_classes, activation=LayerActivation.SOFTMAX.value))
+        loss = LossFunction.CATEGORICAL_CROSSENTROPY.value
+        metrics = resolve_metrics([Metric.ACCURACY])
+
+    # Create optimizer with learning rate
+    optimizer_instance = _create_optimizer_with_lr(optimizer, learning_rate)
+
+    model.compile(optimizer=optimizer_instance, loss=loss, metrics=metrics)
+
+    return model
+
 
 def getModelTemplateNone() -> Optional[Model]:
     '''

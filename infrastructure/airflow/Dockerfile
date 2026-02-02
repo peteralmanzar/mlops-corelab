@@ -15,4 +15,7 @@ RUN PIP_CONSTRAINT="" pip install --no-cache-dir --user \
     seaborn \
     pandas \
     joblib \
-    tensorflow
+    tensorflow \
+    "optuna>=3.0.0" \
+    "optuna-integration[tfkeras]>=3.0.0" \
+    plotly

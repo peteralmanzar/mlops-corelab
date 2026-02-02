@@ -58,5 +58,37 @@
     "MIN_IMPROVEMENT_THRESHOLD": 0.0,
     "AUTO_PROMOTE_FIRST_MODEL": true,
     "FASTAPI_URL": "http://model-serve:8000"
+  },
+  "HYPERPARAMETER_TUNING": {
+    "ENABLED": false,
+    "N_TRIALS": 50,
+    "TIMEOUT_SECONDS": 3600,
+    "SAMPLER": "TPE",
+    "PRUNER": {
+      "TYPE": "MedianPruner",
+      "N_STARTUP_TRIALS": 5,
+      "N_WARMUP_STEPS": 10,
+      "INTERVAL_STEPS": 1
+    },
+    "VALIDATION_SPLIT_FOR_TUNING": 0.2,
+    "TUNING_EPOCHS": 30,
+    "SEARCH_SPACE": {
+      "ARCHITECTURE": {
+        "NUM_HIDDEN_LAYERS": {"low": 1, "high": 4},
+        "HIDDEN_UNITS": {"low": 32, "high": 256, "step": 32},
+        "DROPOUT_RATE": {"low": 0.0, "high": 0.5, "step": 0.1},
+        "ACTIVATION": ["relu", "tanh", "selu", "elu"]
+      },
+      "TRAINING": {
+        "LEARNING_RATE": {"low": 1e-5, "high": 1e-2, "log": true},
+        "BATCH_SIZE": [16, 32, 64, 128, 256],
+        "OPTIMIZER": ["adam", "rmsprop", "sgd", "adamax", "nadam"]
+      }
+    },
+    "MLFLOW_TRACKING": {
+      "LOG_TRIALS": true,
+      "LOG_IMPORTANCE": true,
+      "LOG_VISUALIZATION": true
+    }
   }
 }

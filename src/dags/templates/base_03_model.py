@@ -42,6 +42,7 @@ from model_template import (
     Optimizer
 )
 from model_builder import ModelBuilder
+from hyperparameter_tuner import OptunaHyperparameterTuner
 
 
 def _get_experiment_assets(experiment_name: str):
@@ -272,11 +273,181 @@ def _model_build(config, experiment_name: Optional[str] = None):
     return model_build
 
 
+def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
+    """Create the hyperparameter_tune task function with injected config."""
+    def hyperparameter_tune(**context):
+        """Run Optuna hyperparameter optimization if enabled."""
+        import mlflow
+        from sklearn.model_selection import train_test_split
+
+        exp_prefix = f"[{experiment_name}] " if experiment_name else ""
+        ti = context['ti']
+
+        # Check if tuning is enabled
+        tuning_config = getattr(config, 'HYPERPARAMETER_TUNING', {})
+        if not tuning_config.get('ENABLED', False):
+            print(f"{exp_prefix}Hyperparameter tuning DISABLED. Using config defaults.")
+            context['ti'].xcom_push(key='best_hyperparams', value=None)
+            return None
+
+        print(f"\n{'='*60}")
+        print(f"{exp_prefix}HYPERPARAMETER TUNING STARTING")
+        print(f"{'='*60}")
+
+        # Get model config from previous task
+        model_config = ti.xcom_pull(task_ids='model_build', key='model_config')
+        folds_info = ti.xcom_pull(task_ids='metadata_load', key='folds_info')
+
+        if not model_config or not folds_info:
+            raise ValueError("model_config or folds_info not found from upstream tasks")
+
+        task_type = model_config['task_type']
+        num_features = model_config['num_features']
+        num_classes = model_config['num_classes']
+
+        # Load training data from first fold
+        first_fold = folds_info[0]
+        train_path = first_fold['train_path']
+
+        print(f"{exp_prefix}Loading tuning data from: {train_path}")
+        train_df = pd.read_csv(train_path)
+
+        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        feature_cols = [col for col in train_df.columns if col not in label_cols]
+
+        X = train_df[feature_cols].values
+        y = train_df[label_cols].values
+
+        # Split for tuning validation
+        val_split = tuning_config.get('VALIDATION_SPLIT_FOR_TUNING', 0.2)
+        random_seed = config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=val_split, random_state=random_seed
+        )
+
+        print(f"{exp_prefix}Tuning data: X_train={X_train.shape}, X_val={X_val.shape}")
+
+        # Initialize MLflow for tuning run
+        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+
+        logger = MLFlowLogger(
+            tracking_uri=mlflow_tracking_uri,
+            experiment_name=mlflow_experiment_name
+        )
+
+        invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
+        dag_run_id = context.get('dag_run').run_id
+
+        run_name = "D3S1.5_Hyperparameter_Tuning"
+        tags = {
+            "task_type": "hyperparameter_tuning",
+            "model_type": task_type,
+            "dag_id": context.get('dag').dag_id,
+            "task_id": context.get('task').task_id,
+            "airflow_dag_run_id": dag_run_id,
+            "invocation_id": invocation_id if invocation_id else 'unknown',
+            "pipeline_step": "D3S1.5"
+        }
+        if experiment_name:
+            tags["experiment_name"] = experiment_name
+
+        logger.start_run(run_name=run_name, tags=tags)
+
+        try:
+            # Log tuning configuration
+            logger.log_params({
+                'n_trials': tuning_config.get('N_TRIALS', 50),
+                'timeout_seconds': tuning_config.get('TIMEOUT_SECONDS', 3600),
+                'sampler': tuning_config.get('SAMPLER', 'TPE'),
+                'pruner_type': tuning_config.get('PRUNER', {}).get('TYPE', 'MedianPruner'),
+                'tuning_epochs': tuning_config.get('TUNING_EPOCHS', 30),
+                'task_type': task_type,
+                'num_features': num_features,
+            })
+
+            # Create tuner and run study
+            tuner = OptunaHyperparameterTuner(
+                config=config,
+                task_type=task_type,
+                num_features=num_features,
+                num_classes=num_classes,
+                mlflow_logger=logger
+            )
+
+            study_name = f"{experiment_name}_hpo_study" if experiment_name else "hpo_study"
+            best_params, study = tuner.run_study(
+                X_train, y_train, X_val, y_val,
+                study_name=study_name
+            )
+
+            # Convert to training format
+            best_hyperparams = tuner.get_best_params_for_training(best_params)
+
+            # Log best params
+            for k, v in best_params.items():
+                logger.log_params({f"best_{k}": str(v)})
+
+            # Log study summary metrics
+            study_summary = tuner.get_study_summary(study)
+            logger.log_metrics({
+                'best_val_loss': study_summary['best_val_loss'] or 0.0,
+                'n_trials_completed': study_summary['n_trials_completed'],
+                'n_trials_pruned': study_summary['n_trials_pruned'],
+                'n_trials_failed': study_summary['n_trials_failed'],
+            })
+
+            # Log visualizations if enabled
+            if tuning_config.get('MLFLOW_TRACKING', {}).get('LOG_VISUALIZATION', True):
+                try:
+                    import optuna.visualization as vis
+
+                    # Optimization history
+                    fig_history = vis.plot_optimization_history(study)
+                    mlflow.log_figure(fig_history, "visualizations/optimization_history.html")
+
+                    # Parameter importance (may fail with few trials)
+                    if tuning_config.get('MLFLOW_TRACKING', {}).get('LOG_IMPORTANCE', True):
+                        try:
+                            fig_importance = vis.plot_param_importances(study)
+                            mlflow.log_figure(fig_importance, "visualizations/param_importances.html")
+                        except Exception as e:
+                            print(f"{exp_prefix}Could not generate param importance plot: {e}")
+                except Exception as e:
+                    print(f"{exp_prefix}Could not generate visualizations: {e}")
+
+            logger.end_run(status="FINISHED")
+
+            # Push best hyperparams to XCom
+            context['ti'].xcom_push(key='best_hyperparams', value=best_hyperparams)
+            context['ti'].xcom_push(key='tuning_run_id', value=logger.get_run_id())
+
+            print(f"\n{exp_prefix}Hyperparameter tuning completed!")
+            print(f"{exp_prefix}Best validation loss: {study.best_value:.6f}")
+            print(f"{exp_prefix}Best params:")
+            print(json.dumps(best_params, indent=2, default=str))
+
+            return best_hyperparams
+
+        except Exception as e:
+            print(f"{exp_prefix}Error during hyperparameter tuning: {e}")
+            logger.end_run(status="FAILED")
+            raise
+
+    return hyperparameter_tune
+
+
 def _create_train_fold_model_task(config, experiment_name: Optional[str] = None):
     """Create the train_fold_model task function."""
     @task
-    def train_fold_model(fold_info: dict, model_config: dict) -> dict:
-        """Train model for a single fold and log to MLflow."""
+    def train_fold_model(fold_info: dict, model_config: dict, best_hyperparams: Optional[dict] = None) -> dict:
+        """Train model for a single fold and log to MLflow.
+
+        Args:
+            fold_info: Dict with fold_id, train_path, test_path
+            model_config: Model configuration from model_build task
+            best_hyperparams: Optional hyperparameters from Optuna tuning
+        """
         fold_id = fold_info['fold_id']
         train_path = fold_info['train_path']
         test_path = fold_info['test_path']
@@ -285,6 +456,10 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
 
         print(f"\n{'='*60}")
         print(f"{exp_prefix}Training Fold {fold_id}")
+        if best_hyperparams:
+            print(f"{exp_prefix}Using tuned hyperparameters")
+        else:
+            print(f"{exp_prefix}Using default hyperparameters")
         print(f"{'='*60}")
 
         train_df = pd.read_csv(train_path)
@@ -311,8 +486,14 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         else:
             optimizer = optimizer_value
 
+        # Build model with hyperparams if available
         model_builder = ModelBuilder(config)
-        model = model_builder.build_model_for_training(task_type=task_type, num_features=num_features, num_classes=num_classes)
+        model = model_builder.build_model_for_training(
+            task_type=task_type,
+            num_features=num_features,
+            num_classes=num_classes,
+            hyperparams=best_hyperparams
+        )
 
         print(f"\n{exp_prefix}Model instantiated: {task_type}")
         model.summary()
@@ -340,11 +521,29 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             "task_id": context.get('task').task_id,
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id if invocation_id else 'unknown',
-            "pipeline_step": "D3S1"
+            "pipeline_step": "D3S1",
+            "hyperparams_tuned": str(best_hyperparams is not None)
         }
 
         if experiment_name:
             tags["experiment_name"] = experiment_name
+
+        # Determine training parameters (use tuned params if available)
+        if best_hyperparams and 'training' in best_hyperparams:
+            train_params = best_hyperparams['training']
+            epochs = train_params.get('epochs', model_config['epochs'])
+            batch_size = train_params.get('batch_size', model_config['batch_size'])
+            early_stopping_patience = train_params.get('early_stopping_patience', model_config['early_stopping_patience'])
+            validation_split = train_params.get('validation_split', model_config['validation_split'])
+            optimizer_name = train_params.get('optimizer', model_config['optimizer_name'])
+            learning_rate = train_params.get('learning_rate', None)
+        else:
+            epochs = model_config['epochs']
+            batch_size = model_config['batch_size']
+            early_stopping_patience = model_config['early_stopping_patience']
+            validation_split = model_config['validation_split']
+            optimizer_name = model_config['optimizer_name']
+            learning_rate = None
 
         try:
             logger.start_run(run_name=run_name, tags=tags)
@@ -354,29 +553,42 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
                 "task_type": task_type,
                 "num_features": num_features,
                 "num_classes": num_classes,
-                "optimizer": model_config['optimizer_name'],
-                "epochs": model_config['epochs'],
-                "batch_size": model_config['batch_size'],
-                "validation_split": model_config['validation_split'],
-                "early_stopping_patience": model_config['early_stopping_patience'],
+                "optimizer": optimizer_name,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "validation_split": validation_split,
+                "early_stopping_patience": early_stopping_patience,
                 "train_samples": len(X_train),
-                "test_samples": len(X_test)
+                "test_samples": len(X_test),
+                "hyperparams_tuned": best_hyperparams is not None
             }
+
+            # Add architecture params if tuned
+            if best_hyperparams and 'architecture' in best_hyperparams:
+                arch = best_hyperparams['architecture']
+                params['tuned_num_hidden_layers'] = arch.get('num_hidden_layers')
+                params['tuned_hidden_units'] = str(arch.get('hidden_units'))
+                params['tuned_dropout_rate'] = arch.get('dropout_rate')
+                params['tuned_activation'] = arch.get('activation')
+
+            if learning_rate:
+                params['learning_rate'] = learning_rate
+
             logger.log_params(params)
 
             early_stopping = EarlyStopping(
                 monitor='val_loss',
-                patience=model_config['early_stopping_patience'],
+                patience=early_stopping_patience,
                 restore_best_weights=True,
                 verbose=1
             )
 
-            print(f"\n{exp_prefix}Training model for {model_config['epochs']} epochs...")
+            print(f"\n{exp_prefix}Training model for {epochs} epochs...")
             history = model.fit(
                 X_train, y_train,
-                epochs=model_config['epochs'],
-                batch_size=model_config['batch_size'],
-                validation_split=model_config['validation_split'],
+                epochs=epochs,
+                batch_size=batch_size,
+                validation_split=validation_split,
                 callbacks=[early_stopping],
                 verbose=1
             )
@@ -755,28 +967,35 @@ def create_model_dag(
             python_callable=_model_build(config, experiment_name),
         )
 
-        # Task 3: Train models for all folds in parallel
+        # Task 3: Hyperparameter tuning (optional, runs if HYPERPARAMETER_TUNING.ENABLED=true)
+        hyperparameter_tune_task = PythonOperator(
+            task_id="hyperparameter_tune",
+            python_callable=_hyperparameter_tune(config, experiment_name),
+        )
+
+        # Task 4: Train models for all folds in parallel
         train_fold_model = _create_train_fold_model_task(config, experiment_name)
         train_fold_model_tasks = train_fold_model.partial(
-            model_config=model_build_task.output
+            model_config=model_build_task.output,
+            best_hyperparams=hyperparameter_tune_task.output
         ).expand(
             fold_info=metadata_load_task.output
         )
 
-        # Task 4: Register best model to MLflow Model Registry
+        # Task 5: Register best model to MLflow Model Registry
         model_register_task = PythonOperator(
             task_id="model_register",
             python_callable=_model_register(config, experiment_name),
             outlets=[trained_asset],
         )
 
-        # Task 5: Validate registered combined model
+        # Task 6: Validate registered combined model
         validate_model_task = PythonOperator(
             task_id="validate_model",
             python_callable=_validate_registered_model(config, experiment_name),
         )
 
         # Task dependencies
-        metadata_load_task >> model_build_task >> train_fold_model_tasks >> model_register_task >> validate_model_task
+        metadata_load_task >> model_build_task >> hyperparameter_tune_task >> train_fold_model_tasks >> model_register_task >> validate_model_task
 
     return dag

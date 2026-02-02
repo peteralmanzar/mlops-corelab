@@ -48,6 +48,9 @@
                             <li class="nav-item">
                                 <button class="nav-link @(ActiveTab == "promotion" ? "active" : "")" @onclick='() => ActiveTab = "promotion"'>Promotion</button>
                             </li>
+                            <li class="nav-item">
+                                <button class="nav-link @(ActiveTab == "tuning" ? "active" : "")" @onclick='() => ActiveTab = "tuning"'>Tuning</button>
+                            </li>
                         </ul>
                     </div>
                     <div class="card-body">
@@ -209,6 +212,133 @@
                                 <label class="form-check-label" for="autoPromote">Auto-promote First Model</label>
                             </div>
                         }
+                        else if (ActiveTab == "tuning")
+                        {
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h5 class="mb-0">Hyperparameter Tuning (Optuna)</h5>
+                                <div class="form-check form-switch">
+                                    <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.Enabled" id="enableTuning" />
+                                    <label class="form-check-label" for="enableTuning">Enable</label>
+                                </div>
+                            </div>
+
+                            @if (Config.HyperparameterTuning.Enabled)
+                            {
+                                <div class="row">
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label">Trials</label>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.NTrials" min="5" max="500" />
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label">Timeout (s)</label>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.TimeoutSeconds" />
+                                    </div>
+                                    <div class="col-md-4 mb-3">
+                                        <label class="form-label">Tuning Epochs</label>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.TuningEpochs" />
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Sampler</label>
+                                        <select class="form-select" @bind="Config.HyperparameterTuning.Sampler">
+                                            <option value="TPE">TPE</option>
+                                            <option value="RandomSampler">Random</option>
+                                            <option value="CmaEsSampler">CMA-ES</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Pruner</label>
+                                        <select class="form-select" @bind="Config.HyperparameterTuning.Pruner.Type">
+                                            <option value="MedianPruner">Median</option>
+                                            <option value="SuccessiveHalvingPruner">Successive Halving</option>
+                                            <option value="HyperbandPruner">Hyperband</option>
+                                            <option value="NopPruner">None</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <h6>Architecture Search Space</h6>
+                                <div class="row">
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Hidden Layers</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.NumHiddenLayers.Low" />
+                                            <span class="input-group-text">-</span>
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.NumHiddenLayers.High" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Hidden Units</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.HiddenUnits.Low" />
+                                            <span class="input-group-text">-</span>
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.HiddenUnits.High" />
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Dropout Rate</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.DropoutRate.Low" step="0.1" />
+                                            <span class="input-group-text">-</span>
+                                            <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.DropoutRate.High" step="0.1" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Activations</label>
+                                        <input type="text" class="form-control form-control-sm" @bind="ActivationsText" />
+                                    </div>
+                                </div>
+
+                                <h6 class="mt-2">Training Search Space</h6>
+                                <div class="row">
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Learning Rate</label>
+                                        <div class="input-group input-group-sm">
+                                            <input type="text" class="form-control" @bind="LearningRateLowText" />
+                                            <span class="input-group-text">-</span>
+                                            <input type="text" class="form-control" @bind="LearningRateHighText" />
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6 mb-2">
+                                        <label class="form-label small">Batch Sizes</label>
+                                        <input type="text" class="form-control form-control-sm" @bind="BatchSizesText" />
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small">Optimizers</label>
+                                    <input type="text" class="form-control form-control-sm" @bind="OptimizersText" />
+                                </div>
+
+                                <h6 class="mt-2">MLflow Tracking</h6>
+                                <div class="row">
+                                    <div class="col-4">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogTrials" id="editLogTrials" />
+                                            <label class="form-check-label small" for="editLogTrials">Log Trials</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-4">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogImportance" id="editLogImportance" />
+                                            <label class="form-check-label small" for="editLogImportance">Importance</label>
+                                        </div>
+                                    </div>
+                                    <div class="col-4">
+                                        <div class="form-check">
+                                            <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogVisualization" id="editLogViz" />
+                                            <label class="form-check-label small" for="editLogViz">Visualizations</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                            else
+                            {
+                                <p class="text-muted">Enable hyperparameter tuning to configure Optuna optimization settings.</p>
+                            }
+                        }
                     </div>
                 </div>
 
@@ -314,6 +444,54 @@
             .Select(s => s.Trim())
             .Where(s => !string.IsNullOrEmpty(s))
             .ToList();
+    }
+
+    private static List<int> ParseIntList(string value)
+    {
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => int.TryParse(s, out _))
+            .Select(int.Parse)
+            .ToList();
+    }
+
+    // Hyperparameter tuning text bindings
+    private string ActivationsText
+    {
+        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Architecture.Activation);
+        set => Config.HyperparameterTuning.SearchSpace.Architecture.Activation = ParseColumns(value);
+    }
+
+    private string BatchSizesText
+    {
+        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Training.BatchSize);
+        set => Config.HyperparameterTuning.SearchSpace.Training.BatchSize = ParseIntList(value);
+    }
+
+    private string OptimizersText
+    {
+        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Training.Optimizer);
+        set => Config.HyperparameterTuning.SearchSpace.Training.Optimizer = ParseColumns(value);
+    }
+
+    private string LearningRateLowText
+    {
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("E1");
+        set
+        {
+            if (double.TryParse(value, out var v))
+                Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low = v;
+        }
+    }
+
+    private string LearningRateHighText
+    {
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("E1");
+        set
+        {
+            if (double.TryParse(value, out var v))
+                Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High = v;
+        }
     }
 
     private string ConfigJson
