@@ -8,7 +8,9 @@
       "Bash(dotnet build:*)",
       "Bash(docker exec:*)",
       "Bash(docker compose restart:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(dir /s /b c:Reposmlops-corelabsrcdagsconfigs)",
+      "Bash(docker ps:*)"
     ]
   }
 }
