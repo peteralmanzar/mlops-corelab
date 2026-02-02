@@ -232,3 +232,9 @@ project.fragment.lock.json
 artifacts/
 **/Properties/launchSettings.json
 **/settings.local.json
+
+# DAG files (generated from templates)
+*01_dag_data.py
+*02_dag_preprocess.py
+*03_dag_model.py
+*04_dag_promote.py

@@ -75,10 +75,6 @@ def _perform_eda(config, experiment_name: Optional[str] = None):
         mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
         mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
 
-        # Use experiment-specific MLflow experiment if specified
-        if experiment_name:
-            mlflow_experiment_name = f"{mlflow_experiment_name}_{experiment_name}"
-
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
             experiment_name=mlflow_experiment_name
@@ -271,8 +267,6 @@ def _split_data(config, experiment_name: Optional[str] = None):
             # Log to MLflow
             mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
             mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
-            if experiment_name:
-                mlflow_experiment_name = f"{mlflow_experiment_name}_{experiment_name}"
 
             logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
             dag_run_id = context.get('dag_run').run_id

@@ -299,8 +299,8 @@ services:
   #                https://jupyter-docker-stacks.readthedocs.io/en/latest/using/running.html
   jupyterlab:
     build:
-      context: .
-      dockerfile: infrastructure/jupyterlabs/Dockerfile
+      context: ./infrastructure/jupyterlabs
+      dockerfile: Dockerfile
     container_name: jupyterlab
     environment:
       JUPYTER_TOKEN: ""
