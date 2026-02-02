@@ -63,6 +63,7 @@ class MlflowChampionSensor(BaseSensorOperator):
                 }
             }
         """
+        self.log.info(f"Connecting to MLflow at: {self.tracking_uri}")
         mlflow.set_tracking_uri(self.tracking_uri)
         client = MlflowClient()
 
@@ -70,10 +71,13 @@ class MlflowChampionSensor(BaseSensorOperator):
 
         try:
             # Get all registered models
-            registered_models = client.search_registered_models()
+            self.log.info("Querying registered models from MLflow...")
+            registered_models = list(client.search_registered_models())
+            self.log.info(f"Found {len(registered_models)} registered models")
 
             for rm in registered_models:
                 model_name = rm.name
+                self.log.info(f"  Checking model: {model_name}")
 
                 try:
                     # Try to get the version with champion alias
@@ -82,36 +86,48 @@ class MlflowChampionSensor(BaseSensorOperator):
                         alias=self.champion_alias
                     )
 
+                    self.log.info(
+                        f"    FOUND champion: {model_name} v{version.version} "
+                        f"(run_id={version.run_id[:8]}...)"
+                    )
+
                     champions[model_name] = {
                         "version": version.version,
                         "run_id": version.run_id,
                         "creation_timestamp": version.creation_timestamp
                     }
 
-                except mlflow.exceptions.MlflowException:
+                except mlflow.exceptions.MlflowException as e:
                     # Model doesn't have a champion alias - skip it
-                    pass
+                    self.log.debug(f"    No '{self.champion_alias}' alias: {e}")
 
         except Exception as e:
-            self.log.warning(f"Error querying MLflow: {e}")
+            self.log.error(f"Error querying MLflow: {type(e).__name__}: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
 
+        self.log.info(f"Total champions found: {len(champions)}")
         return champions
 
     def _get_last_known_state(self) -> Dict[str, Dict[str, Any]]:
         """Load last known champion state from Airflow Variable."""
         try:
             state_json = Variable.get(self.state_variable_key, default_var="{}")
-            return json.loads(state_json)
+            state = json.loads(state_json)
+            self.log.info(f"Loaded state from variable '{self.state_variable_key}': {state}")
+            return state
         except Exception as e:
-            self.log.warning(f"Could not load state variable: {e}")
+            self.log.warning(f"Could not load state variable '{self.state_variable_key}': {e}")
             return {}
 
     def _save_current_state(self, state: Dict[str, Dict[str, Any]]) -> None:
         """Save current champion state to Airflow Variable."""
         try:
+            self.log.info(f"Saving state to variable '{self.state_variable_key}': {state}")
             Variable.set(self.state_variable_key, json.dumps(state))
+            self.log.info("State saved successfully")
         except Exception as e:
-            self.log.error(f"Could not save state variable: {e}")
+            self.log.error(f"Could not save state variable '{self.state_variable_key}': {e}")
 
     def _detect_changes(
         self,
@@ -157,7 +173,12 @@ class MlflowChampionSensor(BaseSensorOperator):
 
         Returns True if changes detected, False otherwise.
         """
-        self.log.info(f"Checking MLflow for champion changes at {self.tracking_uri}")
+        self.log.info("=" * 60)
+        self.log.info("MLFLOW CHAMPION SENSOR - POKE START")
+        self.log.info("=" * 60)
+        self.log.info(f"Tracking URI: {self.tracking_uri}")
+        self.log.info(f"Champion alias: {self.champion_alias}")
+        self.log.info(f"State variable key: {self.state_variable_key}")
 
         # Get current state from MLflow
         current_state = self._get_current_champions()
@@ -171,7 +192,9 @@ class MlflowChampionSensor(BaseSensorOperator):
         changes = self._detect_changes(current_state, previous_state)
 
         if changes["has_changes"]:
-            self.log.info("Champion changes detected!")
+            self.log.info("=" * 60)
+            self.log.info("CHAMPION CHANGES DETECTED!")
+            self.log.info("=" * 60)
             if changes["new_champions"]:
                 self.log.info(f"  New champions: {changes['new_champions']}")
             if changes["updated_champions"]:
@@ -186,7 +209,11 @@ class MlflowChampionSensor(BaseSensorOperator):
             context['ti'].xcom_push(key='champion_changes', value=changes)
             context['ti'].xcom_push(key='current_champions', value=current_state)
 
+            self.log.info("Sensor returning TRUE - will trigger downstream tasks")
             return True
         else:
-            self.log.info("No champion changes detected")
+            self.log.info("No champion changes detected - sensor returning FALSE")
+            self.log.info(f"  Current state: {list(current_state.keys())}")
+            self.log.info(f"  Previous state: {list(previous_state.keys())}")
+            self.log.info("=" * 60)
             return False
