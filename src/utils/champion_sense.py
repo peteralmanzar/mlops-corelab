@@ -6,7 +6,7 @@ has a new champion version. It enables decoupled model serving updates that work
 across all experiments.
 """
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from airflow.models import Variable
 from airflow.sensors.base import BaseSensorOperator

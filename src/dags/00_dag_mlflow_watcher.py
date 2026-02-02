@@ -28,9 +28,7 @@ sys.path.insert(0, str(dags_dir.parent / "utils"))
 sys.path.insert(0, str(dags_dir))
 from config_load import Config
 from mlflow_log import MLFlowLogger
-
-# Import custom sensor
-from sensors.mlflow_champion_sensor import MlflowChampionSensor
+from champion_sense import MlflowChampionSensor
 
 # Load configuration
 config = Config.load()

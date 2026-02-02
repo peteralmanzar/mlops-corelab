@@ -19,6 +19,7 @@ from .data_transform import (
 )
 from .data_pipeline import build_pipeline, save_pipeline, load_pipeline
 from .mlflow_log import MLFlowLogger
+from .champion_sense import MlflowChampionSensor
 
 # Public names that are safe to import from the package.
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
 	"save_pipeline",
 	"load_pipeline",
 	"MLFlowLogger",
+	"MlflowChampionSensor",
 	# heavy modules exposed lazily
 	"model_template",
 ]
