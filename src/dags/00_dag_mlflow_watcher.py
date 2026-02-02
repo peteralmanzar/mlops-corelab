@@ -369,6 +369,7 @@ with DAG(
         poke_interval=60,  # Check every 60 seconds within the sensor
         timeout=240,  # Timeout after 4 minutes (before next scheduled run)
         mode="reschedule",  # Free up worker slot while waiting
+        soft_fail=True,  # Mark as skipped (not failed) when no changes detected
     )
 
     # Task 2: Reload FastAPI models
