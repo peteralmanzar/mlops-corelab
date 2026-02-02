@@ -19,18 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config
 
 
-def _get_experiment_assets(experiment_name: Optional[str] = None):
+def _get_experiment_assets(experiment_name: str):
     """Get experiment-scoped assets."""
-    if experiment_name is None:
-        from assets import TRAINED_MODEL_ASSET
-        return TRAINED_MODEL_ASSET
-    else:
-        trained_asset = Dataset(f"mlflow://experiments/{experiment_name}/model")
-        return trained_asset
+    trained_asset = Dataset(f"mlflow://experiments/{experiment_name}/model")
+    return trained_asset
 
 
 def create_promote_dag(
-    experiment_name: Optional[str] = None,
+    experiment_name: str,
     config_path: Optional[str] = None,
 ) -> DAG:
     """
@@ -60,20 +56,15 @@ def create_promote_dag(
     trained_asset = _get_experiment_assets(experiment_name)
 
     # Determine DAG ID
-    if experiment_name:
-        dag_id = f"{experiment_name}_04_dag_promote"
-        description = f"Model promotion for {experiment_name} experiment"
-        tags = ["promotion", "ml-pipeline", "experiment", experiment_name]
-    else:
-        dag_id = "04_dag_promote"
-        description = "Model promotion DAG - compares and promotes champion models"
-        tags = ["promotion", "ml-pipeline"]
+    dag_id = f"{experiment_name}_04_dag_promote"
+    description = f"Model promotion for {experiment_name} experiment"
+    tags = ["promotion", "ml-pipeline", "experiment", experiment_name]
 
     dag = DAG(
         dag_id=dag_id,
         default_args=config.DEFAULT_DAG_ARGS,
         description=description,
-        schedule=[trained_asset] if experiment_name else None,
+        schedule=[trained_asset],
         start_date=datetime(2026, 1, 1),
         catchup=False,
         tags=tags,

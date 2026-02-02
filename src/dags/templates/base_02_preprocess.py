@@ -19,20 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config
 
 
-def _get_experiment_assets(experiment_name: Optional[str] = None):
+def _get_experiment_assets(experiment_name: str):
     """Get experiment-scoped assets."""
-    if experiment_name is None:
-        from assets import TRAIN_TEST_SPLIT_ASSET, PREPROCESSING_PIPELINE_ASSET, TRANSFORMED_DATA_ASSET
-        return TRAIN_TEST_SPLIT_ASSET, PREPROCESSING_PIPELINE_ASSET, TRANSFORMED_DATA_ASSET
-    else:
-        split_asset = Dataset(f"file://experiments/{experiment_name}/train_test_split.csv")
-        pipeline_asset = Dataset(f"file://experiments/{experiment_name}/preprocessing_pipeline.joblib")
-        transformed_asset = Dataset(f"file://experiments/{experiment_name}/transformed_data.csv")
-        return split_asset, pipeline_asset, transformed_asset
+    split_asset = Dataset(f"file://experiments/{experiment_name}/train_test_split.csv")
+    pipeline_asset = Dataset(f"file://experiments/{experiment_name}/preprocessing_pipeline.joblib")
+    transformed_asset = Dataset(f"file://experiments/{experiment_name}/transformed_data.csv")
+    return split_asset, pipeline_asset, transformed_asset
 
 
 def create_preprocess_dag(
-    experiment_name: Optional[str] = None,
+    experiment_name: str,
     config_path: Optional[str] = None,
 ) -> DAG:
     """
@@ -58,14 +54,9 @@ def create_preprocess_dag(
     split_asset, pipeline_asset, transformed_asset = _get_experiment_assets(experiment_name)
 
     # Determine DAG ID
-    if experiment_name:
-        dag_id = f"{experiment_name}_02_dag_preprocess"
-        description = f"Preprocessing pipeline for {experiment_name} experiment"
-        tags = ["preprocessing", "ml-pipeline", "experiment", experiment_name]
-    else:
-        dag_id = "02_dag_preprocess"
-        description = "Preprocessing pipeline DAG"
-        tags = ["preprocessing", "ml-pipeline"]
+    dag_id = f"{experiment_name}_02_dag_preprocess"
+    description = f"Preprocessing pipeline for {experiment_name} experiment"
+    tags = ["preprocessing", "ml-pipeline", "experiment", experiment_name]
 
     # Import the actual implementation
     # For now, we delegate to the original DAG logic
@@ -77,13 +68,22 @@ def create_preprocess_dag(
         dag_id=dag_id,
         default_args=config.DEFAULT_DAG_ARGS,
         description=description,
-        schedule=[split_asset] if experiment_name else None,
+        schedule=[split_asset],
         start_date=datetime(2026, 1, 1),
         catchup=False,
         tags=tags,
     )
 
-    # Placeholder - actual implementation would include all preprocessing tasks
-    # For generated experiments, the dashboard will create full DAG files
+    with dag:
+        # Placeholder task - actual implementation would include all preprocessing tasks
+        # For generated experiments, the dashboard will create full DAG files
+        def _placeholder_preprocess(**kwargs):
+            print(f"Preprocessing placeholder for {experiment_name or 'default'}")
+
+        preprocess_task = PythonOperator(
+            task_id="preprocess_data",
+            python_callable=_placeholder_preprocess,
+            outlets=[transformed_asset],
+        )
 
     return dag

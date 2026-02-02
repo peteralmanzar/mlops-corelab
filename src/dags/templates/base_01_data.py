@@ -9,7 +9,7 @@ import uuid
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional  # Used in function signatures
 
 from airflow import DAG
 from airflow.datasets import Dataset
@@ -24,22 +24,11 @@ from config_load import Config
 from mlflow_log import MLFlowLogger
 
 
-def _get_experiment_assets(experiment_name: Optional[str] = None):
-    """
-    Get experiment-scoped assets.
-
-    If experiment_name is None, returns default assets for backward compatibility.
-    Otherwise returns experiment-scoped assets.
-    """
-    if experiment_name is None:
-        # Default assets (backward compatible)
-        from assets import RAW_DATA_ASSET, TRAIN_TEST_SPLIT_ASSET
-        return RAW_DATA_ASSET, TRAIN_TEST_SPLIT_ASSET
-    else:
-        # Experiment-scoped assets
-        raw_asset = Dataset(f"file://experiments/{experiment_name}/raw_data.csv")
-        split_asset = Dataset(f"file://experiments/{experiment_name}/train_test_split.csv")
-        return raw_asset, split_asset
+def _get_experiment_assets(experiment_name: str):
+    """Get experiment-scoped assets."""
+    raw_asset = Dataset(f"file://experiments/{experiment_name}/raw_data.csv")
+    split_asset = Dataset(f"file://experiments/{experiment_name}/train_test_split.csv")
+    return raw_asset, split_asset
 
 
 def _load_raw_data(config, experiment_name: Optional[str] = None):
@@ -372,7 +361,7 @@ def _split_data(config, experiment_name: Optional[str] = None):
 
 
 def create_data_dag(
-    experiment_name: Optional[str] = None,
+    experiment_name: str,
     config_path: Optional[str] = None,
 ) -> DAG:
     """
@@ -407,14 +396,9 @@ def create_data_dag(
     raw_asset, split_asset = _get_experiment_assets(experiment_name)
 
     # Determine DAG ID
-    if experiment_name:
-        dag_id = f"{experiment_name}_01_dag_data"
-        description = f"Data pipeline for {experiment_name} experiment"
-        tags = ["data", "ml-pipeline", "experiment", experiment_name]
-    else:
-        dag_id = "01_dag_data"
-        description = "Data pipeline DAG - loads raw data, performs EDA, creates train/test splits"
-        tags = ["data", "ml-pipeline"]
+    dag_id = f"{experiment_name}_01_dag_data"
+    description = f"Data pipeline for {experiment_name} experiment"
+    tags = ["data", "ml-pipeline", "experiment", experiment_name]
 
     # Create DAG
     dag = DAG(
