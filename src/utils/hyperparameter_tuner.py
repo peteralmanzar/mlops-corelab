@@ -37,13 +37,17 @@ class OptunaHyperparameterTuner:
         task_type: str,
         num_features: int,
         num_classes: int,
-        mlflow_logger: Optional[Any] = None
+        mlflow_logger: Optional[Any] = None,
+        invocation_id: Optional[str] = None,
+        experiment_name: Optional[str] = None
     ):
         self.config = config
         self.task_type = task_type
         self.num_features = num_features
         self.num_classes = num_classes
         self.mlflow_logger = mlflow_logger
+        self.invocation_id = invocation_id
+        self.experiment_name = experiment_name
 
         # Extract tuning config
         self.tuning_config = getattr(config, 'HYPERPARAMETER_TUNING', {})
@@ -216,7 +220,22 @@ class OptunaHyperparameterTuner:
     def _log_trial_to_mlflow(self, trial: optuna.Trial, params: Dict, val_loss: float):
         """Log individual trial results to MLflow as nested run."""
         try:
-            with mlflow.start_run(nested=True, run_name=f"trial_{trial.number}"):
+            run_name = f"D3S2_HPO_Trial_{trial.number}"
+
+            # Build tags consistent with other pipeline runs
+            tags = {
+                "task_type": "hyperparameter_tuning_trial",
+                "model_type": self.task_type,
+                "trial_number": str(trial.number),
+                "pipeline_step": "D3S2"
+            }
+
+            if self.invocation_id:
+                tags["invocation_id"] = self.invocation_id
+            if self.experiment_name:
+                tags["experiment_name"] = self.experiment_name
+
+            with mlflow.start_run(nested=True, run_name=run_name, tags=tags):
                 # Log params (convert to strings for MLflow compatibility)
                 mlflow_params = {k: str(v) if not isinstance(v, (int, float, str, bool)) else v
                                  for k, v in params.items()}

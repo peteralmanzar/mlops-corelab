@@ -339,7 +339,7 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
         invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
 
-        run_name = "D3S1.5_Hyperparameter_Tuning"
+        run_name = "D3S2_Hyperparameter_Tuning"
         tags = {
             "task_type": "hyperparameter_tuning",
             "model_type": task_type,
@@ -347,7 +347,7 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
             "task_id": context.get('task').task_id,
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id if invocation_id else 'unknown',
-            "pipeline_step": "D3S1.5"
+            "pipeline_step": "D3S2"
         }
         if experiment_name:
             tags["experiment_name"] = experiment_name
@@ -372,7 +372,9 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
                 task_type=task_type,
                 num_features=num_features,
                 num_classes=num_classes,
-                mlflow_logger=logger
+                mlflow_logger=logger,
+                invocation_id=invocation_id,
+                experiment_name=experiment_name
             )
 
             study_name = f"{experiment_name}_hpo_study" if experiment_name else "hpo_study"
@@ -512,7 +514,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
 
-        run_name = f"D3S1_Model_Train_Fold_{fold_id}"
+        run_name = f"D3S3_Model_Train_Fold_{fold_id}"
         tags = {
             "task_type": "model_training",
             "model_type": task_type,
@@ -521,7 +523,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             "task_id": context.get('task').task_id,
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id if invocation_id else 'unknown',
-            "pipeline_step": "D3S1",
+            "pipeline_step": "D3S3",
             "hyperparams_tuned": str(best_hyperparams is not None)
         }
 
@@ -735,7 +737,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
         combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
 
         dag_run_id = context.get('dag_run').run_id
-        run_name = "D3S2_Combined_Model_Register"
+        run_name = "D3S4_Combined_Model_Register"
         tags = {
             "task_type": "combined_pipeline_registration",
             "best_fold_id": str(best_fold['fold_id']),
@@ -744,7 +746,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
             "execution_date": str(context.get('execution_date')),
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id,
-            "pipeline_step": "D3S2"
+            "pipeline_step": "D3S4"
         }
 
         if experiment_name:
@@ -872,7 +874,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         X_sample = sample_df[[c for c in sample_df.columns if c not in label_cols]]
 
         dag_run_id = context.get('dag_run').run_id
-        run_name = "D3S3_Preprocessed_Model_Validation"
+        run_name = "D3S5_Preprocessed_Model_Validation"
         tags = {
             "task_type": "validation",
             "dag_id": context.get('dag').dag_id,
@@ -880,7 +882,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
             "execution_date": str(context.get('execution_date')),
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id,
-            "pipeline_step": "D3S3"
+            "pipeline_step": "D3S5"
         }
 
         if experiment_name:
