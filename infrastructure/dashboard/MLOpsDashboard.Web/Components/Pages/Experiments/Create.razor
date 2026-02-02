@@ -319,9 +319,19 @@
                 <!-- Model Step -->
                 <h4>Step 3: Model Configuration</h4>
                 <div class="mb-3">
-                    <label class="form-label">Target Column(s)</label>
-                    <input type="text" class="form-control" @bind="LabelColumnsText" />
-                    <div class="form-text">Comma-separated for multiple targets</div>
+                    <label class="form-label">Target Column(s) <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control @(TargetValidationError != null ? "is-invalid" : "")"
+                           @bind="LabelColumnsText"
+                           @bind:event="oninput"
+                           placeholder="e.g., Survived, Price" />
+                    @if (TargetValidationError != null)
+                    {
+                        <div class="invalid-feedback d-block">@TargetValidationError</div>
+                    }
+                    else
+                    {
+                        <div class="form-text">Comma-separated for multiple targets</div>
+                    }
                 </div>
                 <div class="row">
                     <div class="col-md-4 mb-3">
@@ -613,6 +623,7 @@
     // Validation state
     private string? NameValidationError { get; set; }
     private bool IsValidatingName { get; set; }
+    private string? TargetValidationError { get; set; }
 
     // Pipeline step instances for UI binding
     private ImputerStep Imputer { get; set; } = new();
@@ -665,7 +676,11 @@
     private string LabelColumnsText
     {
         get => string.Join(", ", Config.Model.LabelColumns);
-        set => Config.Model.LabelColumns = ParseColumns(value);
+        set
+        {
+            Config.Model.LabelColumns = ParseColumns(value);
+            TargetValidationError = null;
+        }
     }
 
     private static List<string> ParseColumns(string value)
@@ -782,6 +797,17 @@
             {
                 return;
             }
+        }
+
+        // Validate before leaving Step 3
+        if (CurrentStep == 3)
+        {
+            if (Config.Model.LabelColumns.Count == 0)
+            {
+                TargetValidationError = "Target column is required";
+                return;
+            }
+            TargetValidationError = null;
         }
 
         if (CurrentStep < 4)
