@@ -7,6 +7,7 @@ Supports sklearn pipelines, sklearn models, and Keras models.
 
 import os
 import time
+import json
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -29,6 +30,11 @@ class LoadedModel:
     model: Any
     model_type: str  # 'sklearn_pipeline', 'sklearn_model', 'keras'
     loaded_at: datetime = field(default_factory=datetime.now)
+    # Feature metadata fields
+    input_features: Optional[List[str]] = None
+    feature_dtypes: Optional[Dict[str, str]] = None
+    feature_count: Optional[int] = None
+    feature_metadata_available: bool = False
 
     def predict(self, data) -> Any:
         """Make prediction using the loaded model."""
@@ -74,6 +80,83 @@ class ModelManager:
         if self._client is None:
             self._client = MlflowClient(tracking_uri=self.tracking_uri)
         return self._client
+
+    def _fetch_feature_metadata(self, run_id: str) -> Dict[str, Any]:
+        """
+        Fetch feature metadata from MLflow run artifacts and parameters.
+
+        Looks for:
+        - Parameters: preprocessed_train_columns, raw_data_columns, features
+        - Artifacts: *_info.json, *_dtypes.json
+
+        Args:
+            run_id: MLflow run ID to fetch metadata from
+
+        Returns:
+            Dict with input_features, feature_dtypes, feature_count,
+            and feature_metadata_available flag
+        """
+        try:
+            run = self.client.get_run(run_id)
+            params = run.data.params
+
+            # Try to get feature columns from parameters (fastest approach)
+            feature_columns = None
+            for param_key in ['preprocessed_train_columns', 'raw_data_columns', 'features']:
+                if param_key in params:
+                    feature_columns = [col.strip() for col in params[param_key].split(',')]
+                    logger.debug(f"Found feature columns in param '{param_key}'")
+                    break
+
+            # Try to fetch dtypes artifact
+            feature_dtypes = None
+            try:
+                artifacts = self.client.list_artifacts(run_id)
+                for artifact in artifacts:
+                    if artifact.path.endswith('_dtypes.json'):
+                        local_path = mlflow.artifacts.download_artifacts(
+                            run_id=run_id,
+                            artifact_path=artifact.path
+                        )
+                        with open(local_path, 'r') as f:
+                            feature_dtypes = json.load(f)
+                        logger.debug(f"Loaded dtypes from artifact '{artifact.path}'")
+                        break
+            except Exception as e:
+                logger.debug(f"Could not fetch dtypes artifact: {e}")
+
+            # If we couldn't find columns in params, try to get from info artifact
+            if feature_columns is None:
+                try:
+                    artifacts = self.client.list_artifacts(run_id)
+                    for artifact in artifacts:
+                        if artifact.path.endswith('_info.json'):
+                            local_path = mlflow.artifacts.download_artifacts(
+                                run_id=run_id,
+                                artifact_path=artifact.path
+                            )
+                            with open(local_path, 'r') as f:
+                                info = json.load(f)
+                            if 'columns' in info:
+                                feature_columns = info['columns']
+                                logger.debug(f"Found feature columns in artifact '{artifact.path}'")
+                            break
+                except Exception as e:
+                    logger.debug(f"Could not fetch info artifact: {e}")
+
+            if feature_columns:
+                return {
+                    'input_features': feature_columns,
+                    'feature_dtypes': feature_dtypes,
+                    'feature_count': len(feature_columns),
+                    'feature_metadata_available': True
+                }
+
+            return {'feature_metadata_available': False}
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch feature metadata for run {run_id}: {e}")
+            return {'feature_metadata_available': False}
 
     def discover_champion_models(self) -> List[Dict[str, Any]]:
         """
@@ -165,12 +248,24 @@ class ModelManager:
                 logger.error(f"pyfunc load failed: {e}")
                 raise RuntimeError(f"Failed to load model {model_name}: could not load as sklearn, keras, or pyfunc")
 
+        # Fetch feature metadata from MLflow
+        feature_metadata = self._fetch_feature_metadata(run_id)
+        logger.info(
+            f"Feature metadata for {model_name}: "
+            f"available={feature_metadata.get('feature_metadata_available', False)}, "
+            f"count={feature_metadata.get('feature_count')}"
+        )
+
         return LoadedModel(
             name=model_name,
             version=version,
             run_id=run_id,
             model=model,
-            model_type=model_type
+            model_type=model_type,
+            input_features=feature_metadata.get('input_features'),
+            feature_dtypes=feature_metadata.get('feature_dtypes'),
+            feature_count=feature_metadata.get('feature_count'),
+            feature_metadata_available=feature_metadata.get('feature_metadata_available', False)
         )
 
     def load_all_champions(self) -> Dict[str, LoadedModel]:
@@ -273,10 +368,35 @@ class ModelManager:
                 'version': m.version,
                 'run_id': m.run_id,
                 'model_type': m.model_type,
-                'loaded_at': m.loaded_at.isoformat()
+                'loaded_at': m.loaded_at.isoformat(),
+                'feature_count': m.feature_count,
+                'feature_metadata_available': m.feature_metadata_available
             }
             for m in self.models.values()
         ]
+
+    def get_model_features(self, model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed feature information for a specific model.
+
+        Args:
+            model_name: Name of the model
+
+        Returns:
+            Dict with feature details or None if model not found
+        """
+        model = self.models.get(model_name)
+        if model is None:
+            return None
+
+        return {
+            'model_name': model.name,
+            'model_version': model.version,
+            'feature_metadata_available': model.feature_metadata_available,
+            'feature_count': model.feature_count,
+            'input_features': model.input_features,
+            'feature_dtypes': model.feature_dtypes
+        }
 
     def is_ready(self) -> bool:
         """Check if any models are loaded and ready to serve."""

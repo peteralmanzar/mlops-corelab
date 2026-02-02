@@ -5,7 +5,7 @@ Admin routes for FastAPI model serving.
 import logging
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..schemas import ModelsListResponse, ModelInfo, ReloadResponse, ErrorResponse
+from ..schemas import ModelsListResponse, ModelInfo, ReloadResponse, ErrorResponse, ModelFeaturesResponse
 from ..model_manager import ModelManager
 from ..dependencies import get_model_manager
 
@@ -17,10 +17,10 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
     "/models",
     response_model=ModelsListResponse,
     summary="List loaded models",
-    description="List all currently loaded champion models."
+    description="List all currently loaded champion models with feature summary."
 )
 async def list_models(manager: ModelManager = Depends(get_model_manager)):
-    """List all loaded models with their metadata."""
+    """List all loaded models with their metadata and feature summary."""
     models = manager.list_models()
 
     return ModelsListResponse(
@@ -31,11 +31,49 @@ async def list_models(manager: ModelManager = Depends(get_model_manager)):
                 version=m['version'],
                 run_id=m['run_id'],
                 model_type=m['model_type'],
-                loaded_at=m['loaded_at']
+                loaded_at=m['loaded_at'],
+                feature_count=m.get('feature_count'),
+                feature_metadata_available=m.get('feature_metadata_available', False)
             )
             for m in models
         ]
     )
+
+
+@router.get(
+    "/models/{model_name}/features",
+    response_model=ModelFeaturesResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Model not found"}
+    },
+    summary="Get model input features",
+    description="Get detailed input feature information for a specific loaded model."
+)
+async def get_model_features(
+    model_name: str,
+    manager: ModelManager = Depends(get_model_manager)
+):
+    """
+    Get detailed input feature information for a specific model.
+
+    Returns the feature names, data types, and count that the model expects
+    as input. This information is retrieved from MLflow artifacts logged
+    during model training.
+    """
+    features = manager.get_model_features(model_name)
+
+    if features is None:
+        available = [m['name'] for m in manager.list_models()]
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "model_not_found",
+                "detail": f"Model '{model_name}' not found. Available models: {available}",
+                "model_name": model_name
+            }
+        )
+
+    return ModelFeaturesResponse(**features)
 
 
 @router.post(

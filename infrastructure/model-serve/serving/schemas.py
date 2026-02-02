@@ -45,12 +45,24 @@ class ModelInfo(BaseModel):
     run_id: str = Field(..., description="MLflow run ID")
     model_type: str = Field(..., description="Type of model (sklearn_pipeline, keras, etc.)")
     loaded_at: str = Field(..., description="Timestamp when model was loaded")
+    feature_count: Optional[int] = Field(None, description="Number of input features")
+    feature_metadata_available: bool = Field(False, description="Whether feature metadata is available")
 
 
 class ModelsListResponse(BaseModel):
     """Response schema for listing loaded models."""
     count: int = Field(..., description="Number of loaded models")
     models: List[ModelInfo] = Field(default_factory=list, description="List of model info")
+
+
+class ModelFeaturesResponse(BaseModel):
+    """Response schema for model features endpoint."""
+    model_name: str = Field(..., description="Model name")
+    model_version: str = Field(..., description="Model version")
+    feature_metadata_available: bool = Field(..., description="Whether feature metadata is available")
+    feature_count: Optional[int] = Field(None, description="Number of input features")
+    input_features: Optional[List[str]] = Field(None, description="List of input feature names")
+    feature_dtypes: Optional[Dict[str, str]] = Field(None, description="Feature name to dtype mapping")
 
 
 class ReloadResponse(BaseModel):
