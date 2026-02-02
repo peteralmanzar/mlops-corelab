@@ -12,7 +12,7 @@ pandas
 numpy
 
 # TensorFlow/Keras (for Keras models)
-tensorflow
+tensorflow==2.20.0
 
 # HTTP client (for health checks in tests)
 httpx
