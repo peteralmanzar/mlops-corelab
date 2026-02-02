@@ -9,7 +9,7 @@ import json
 from typing import Any, Dict
 
 from airflow.models import Variable
-from airflow.sensors.base import BaseSensorOperator
+from airflow.sdk.bases.sensor import BaseSensorOperator
 from airflow.utils.context import Context
 
 import mlflow

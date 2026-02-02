@@ -25,7 +25,7 @@ import json
 
 from airflow import DAG
 from airflow.datasets import Dataset
-from airflow.operators.python import PythonOperator, get_current_context
+from airflow.providers.standard.operators.python import PythonOperator, get_current_context
 from airflow.decorators import task
 
 from tensorflow.keras.callbacks import EarlyStopping

@@ -13,7 +13,7 @@ from typing import Optional  # Used in function signatures
 
 from airflow import DAG
 from airflow.datasets import Dataset
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 import pandas as pd
 from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, TimeSeriesSplit

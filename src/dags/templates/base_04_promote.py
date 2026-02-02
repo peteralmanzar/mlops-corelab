@@ -20,7 +20,7 @@ from typing import Optional, Dict, Any
 
 from airflow import DAG
 from airflow.datasets import Dataset
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))

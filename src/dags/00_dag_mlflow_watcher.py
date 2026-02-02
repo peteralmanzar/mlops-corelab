@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator
 
 # Add utils and dags to path
 dags_dir = Path(__file__).resolve().parent

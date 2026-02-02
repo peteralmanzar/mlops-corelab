@@ -25,7 +25,7 @@ import mlflow
 
 from airflow import DAG
 from airflow.datasets import Dataset
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from airflow.decorators import task
 
 # Add utils to path
