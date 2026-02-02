@@ -2,7 +2,7 @@
   "_comment": "Base configuration template for MLOps CoreLab. Experiment-specific configs override these defaults.",
   "MLFLOW": {
     "TRACKING_URI": "http://mlflow:5000",
-    "EXPERIMENT_NAME": "ml_pipeline"
+    "EXPERIMENT_NAME": "Default"
   },
   "RANDOM_SEED": 42,
   "DEFAULT_DAG_ARGS": {
