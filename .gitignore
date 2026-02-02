@@ -238,3 +238,6 @@ artifacts/
 *02_dag_preprocess.py
 *03_dag_model.py
 *04_dag_promote.py
+
+# Generated experiment configs
+src/dags/configs/*/config.json

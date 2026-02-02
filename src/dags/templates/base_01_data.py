@@ -315,13 +315,42 @@ def _split_data(config, experiment_name: Optional[str] = None):
                 skf = StratifiedKFold(n_splits=num_folds, shuffle=shuffle, random_state=random_state if shuffle else None)
                 splitter = skf.split(X, df[stratify_col])
             else:  # timeseries
+                print(f"{exp_prefix}Performing Time Series Split with {num_folds} folds")
+                print(f"  - Gap: {ts_gap} samples")
+                print(f"  - Expanding window: {ts_expanding}")
+
                 if ts_expanding:
+                    # Use sklearn TimeSeriesSplit with gap support (expanding window)
                     tscv = TimeSeriesSplit(n_splits=num_folds, gap=ts_gap)
-                    splitter = tscv.split(X)
+                    splitter = list(tscv.split(X))
                 else:
-                    # Custom sliding window - simplified version
-                    tscv = TimeSeriesSplit(n_splits=num_folds, gap=ts_gap)
-                    splitter = tscv.split(X)
+                    # Sliding window: custom implementation with fixed train size
+                    n_samples = len(X)
+                    # Calculate window size to allow num_folds splits
+                    total_available = n_samples - ts_gap
+                    window_size = total_available // (num_folds + 1)  # +1 to ensure room for validation
+
+                    if window_size < 1:
+                        raise ValueError(f"Not enough data for {num_folds} folds with gap={ts_gap}. Need more samples.")
+
+                    print(f"  - Window size: {window_size} samples")
+
+                    splitter = []
+                    for fold_idx in range(num_folds):
+                        # Sliding window logic
+                        train_start = fold_idx * window_size
+                        train_end = train_start + window_size
+                        val_start = train_end + ts_gap
+                        val_end = val_start + window_size
+
+                        if val_end > n_samples:
+                            print(f"Skipping fold {fold_idx}: not enough data for validation set")
+                            break
+
+                        train_indices = list(range(train_start, train_end))
+                        val_indices = list(range(val_start, val_end))
+                        splitter.append((train_indices, val_indices))
+                        print(f"  Fold {fold_idx} (sliding): train[{train_start}:{train_end}], gap[{train_end}:{val_start}], val[{val_start}:{val_end}]")
 
             fold_paths = []
             for fold_idx, (train_idx, val_idx) in enumerate(splitter):
@@ -346,7 +375,12 @@ def _split_data(config, experiment_name: Optional[str] = None):
             context['ti'].xcom_push(key='num_folds', value=len(fold_paths))
             context['ti'].xcom_push(key='fold_paths', value=fold_paths)
 
-            return f"{fold_type} split complete: {len(fold_paths)} folds created"
+            # Add time series specific metadata
+            if fold_type == "timeseries":
+                context['ti'].xcom_push(key='ts_gap', value=ts_gap)
+                context['ti'].xcom_push(key='ts_expanding', value=ts_expanding)
+
+            return f"{fold_type} split complete: {len(fold_paths)} folds created{f' (gap={ts_gap}, expanding={ts_expanding})' if fold_type == 'timeseries' else ''}"
 
         else:
             raise ValueError(f"Unknown FOLD_TYPE: {fold_type}")
