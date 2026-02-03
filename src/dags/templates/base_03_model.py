@@ -814,6 +814,46 @@ def _model_register(config, experiment_name: Optional[str] = None):
 
         logger.start_run(run_name=run_name, tags=tags)
 
+        # Transfer feature metadata from best fold run to combined model run
+        try:
+            import mlflow
+            from mlflow.tracking import MlflowClient
+
+            best_fold_run = mlflow.get_run(best_fold['run_id'])
+            best_fold_params = best_fold_run.data.params
+
+            # Log feature parameters
+            feature_params = {}
+            if 'preprocessed_train_columns' in best_fold_params:
+                feature_params['preprocessed_train_columns'] = best_fold_params['preprocessed_train_columns']
+            if 'feature_count' in best_fold_params:
+                feature_params['feature_count'] = best_fold_params['feature_count']
+
+            if feature_params:
+                logger.log_params(feature_params)
+                print(f"{exp_prefix}Transferred feature metadata: {list(feature_params.keys())}")
+
+            # Transfer dtypes artifact from best fold
+            mlflow_tracking_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://mlflow:5000')
+            client = MlflowClient(tracking_uri=mlflow_tracking_uri)
+
+            try:
+                artifacts = client.list_artifacts(best_fold['run_id'], path='feature_info')
+                for artifact in artifacts:
+                    if artifact.path.endswith('_dtypes.json'):
+                        local_path = mlflow.artifacts.download_artifacts(
+                            run_id=best_fold['run_id'],
+                            artifact_path=artifact.path
+                        )
+                        logger.log_artifact(local_path, artifact_path='feature_info')
+                        print(f"{exp_prefix}Transferred feature_info artifact: {artifact.path}")
+                        break
+            except Exception as e:
+                print(f"{exp_prefix}Warning: Could not transfer dtypes artifact: {e}")
+
+        except Exception as e:
+            print(f"{exp_prefix}Warning: Could not transfer feature metadata from best fold: {e}")
+
         try:
             processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
             sample_df = None
@@ -835,7 +875,16 @@ def _model_register(config, experiment_name: Optional[str] = None):
         # Use experiment-scoped model name
         promotion_config = getattr(config, 'PROMOTION', {})
         base_model_name = promotion_config.get('MODEL_NAME', 'model')
-        model_name = f"{experiment_name}_{base_model_name}" if experiment_name else base_model_name
+
+        # Avoid double-prefixing if base_model_name already starts with experiment_name
+        if experiment_name:
+            prefix = f"{experiment_name}_"
+            if base_model_name.startswith(prefix):
+                model_name = base_model_name
+            else:
+                model_name = f"{prefix}{base_model_name}"
+        else:
+            model_name = base_model_name
 
         registration_tags = {
             "task_type": task_type,

@@ -456,7 +456,17 @@
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label">Activations</label>
-                                    <input type="text" class="form-control" @bind="ActivationsText" placeholder="relu, tanh, selu, elu" />
+                                    <div class="d-flex flex-wrap gap-2">
+                                        @foreach (var act in AvailableActivations)
+                                        {
+                                            <div class="form-check form-check-inline">
+                                                <input class="form-check-input" type="checkbox" id="create_act_@act"
+                                                       checked="@Config.HyperparameterTuning.SearchSpace.Architecture.Activation.Contains(act)"
+                                                       @onchange="e => ToggleActivation(act, (bool)e.Value!)" />
+                                                <label class="form-check-label small" for="create_act_@act">@act</label>
+                                            </div>
+                                        }
+                                    </div>
                                 </div>
                             </div>
 
@@ -477,7 +487,17 @@
                             </div>
                             <div class="mb-3">
                                 <label class="form-label">Optimizers to Try</label>
-                                <input type="text" class="form-control" @bind="OptimizersText" placeholder="adam, rmsprop, sgd, adamax, nadam" />
+                                <div class="d-flex flex-wrap gap-2">
+                                    @foreach (var opt in AvailableOptimizers)
+                                    {
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="create_opt_@opt"
+                                                   checked="@Config.HyperparameterTuning.SearchSpace.Training.Optimizer.Contains(opt)"
+                                                   @onchange="e => ToggleOptimizer(opt, (bool)e.Value!)" />
+                                            <label class="form-check-label small" for="create_opt_@opt">@opt</label>
+                                        </div>
+                                    }
+                                </div>
                             </div>
 
                             <h6 class="mt-3">MLflow Tracking</h6>
@@ -704,11 +724,28 @@
             .ToList();
     }
 
-    // Hyperparameter tuning text bindings
-    private string ActivationsText
+    // Hyperparameter tuning - available options for multiselect
+    private List<string> AvailableActivations = new() { "relu", "tanh", "elu", "selu", "sigmoid", "leaky_relu" };
+    private List<string> AvailableOptimizers = new() { "adam", "sgd", "rmsprop", "adamax", "nadam" };
+
+    private void ToggleActivation(string activation, bool selected)
     {
-        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Architecture.Activation);
-        set => Config.HyperparameterTuning.SearchSpace.Architecture.Activation = ParseColumns(value);
+        var list = Config.HyperparameterTuning.SearchSpace.Architecture.Activation;
+        if (selected && !list.Contains(activation))
+            list.Add(activation);
+        else if (!selected)
+            list.Remove(activation);
+        StateHasChanged();
+    }
+
+    private void ToggleOptimizer(string optimizer, bool selected)
+    {
+        var list = Config.HyperparameterTuning.SearchSpace.Training.Optimizer;
+        if (selected && !list.Contains(optimizer))
+            list.Add(optimizer);
+        else if (!selected)
+            list.Remove(optimizer);
+        StateHasChanged();
     }
 
     private string BatchSizesText
@@ -717,15 +754,9 @@
         set => Config.HyperparameterTuning.SearchSpace.Training.BatchSize = ParseIntList(value);
     }
 
-    private string OptimizersText
-    {
-        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Training.Optimizer);
-        set => Config.HyperparameterTuning.SearchSpace.Training.Optimizer = ParseColumns(value);
-    }
-
     private string LearningRateLowText
     {
-        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("E1");
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("G4");
         set
         {
             if (double.TryParse(value, out var v))
@@ -735,7 +766,7 @@
 
     private string LearningRateHighText
     {
-        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("E1");
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("G4");
         set
         {
             if (double.TryParse(value, out var v))

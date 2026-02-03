@@ -44,7 +44,16 @@ def _load_model_metadata(config, experiment_name: Optional[str] = None):
 
         promotion_config = getattr(config, 'PROMOTION', {})
         base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
-        model_name = f"{experiment_name}_{base_model_name}" if experiment_name else base_model_name
+
+        # Avoid double-prefixing if base_model_name already starts with experiment_name
+        if experiment_name:
+            prefix = f"{experiment_name}_"
+            if base_model_name.startswith(prefix):
+                model_name = base_model_name
+            else:
+                model_name = f"{prefix}{base_model_name}"
+        else:
+            model_name = base_model_name
 
         mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
         mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
@@ -173,7 +182,17 @@ def _get_champion_model(config, experiment_name: Optional[str] = None):
         promotion_config = getattr(config, 'PROMOTION', {})
 
         base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
-        model_name = f"{experiment_name}_{base_model_name}" if experiment_name else base_model_name
+
+        # Avoid double-prefixing if base_model_name already starts with experiment_name
+        if experiment_name:
+            prefix = f"{experiment_name}_"
+            if base_model_name.startswith(prefix):
+                model_name = base_model_name
+            else:
+                model_name = f"{prefix}{base_model_name}"
+        else:
+            model_name = base_model_name
+
         champion_alias = promotion_config.get('CHAMPION_ALIAS', 'champion')
 
         mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
@@ -305,7 +324,17 @@ def _promote_model(config, experiment_name: Optional[str] = None):
 
         promotion_config = getattr(config, 'PROMOTION', {})
         base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
-        model_name = f"{experiment_name}_{base_model_name}" if experiment_name else base_model_name
+
+        # Avoid double-prefixing if base_model_name already starts with experiment_name
+        if experiment_name:
+            prefix = f"{experiment_name}_"
+            if base_model_name.startswith(prefix):
+                model_name = base_model_name
+            else:
+                model_name = f"{prefix}{base_model_name}"
+        else:
+            model_name = base_model_name
+
         champion_alias = promotion_config.get('CHAMPION_ALIAS', 'champion')
         challenger_alias = promotion_config.get('CHALLENGER_ALIAS', 'challenger')
 
