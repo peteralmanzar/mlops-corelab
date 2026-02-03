@@ -263,6 +263,64 @@ def _model_build(config, experiment_name: Optional[str] = None):
         }
 
         model_config_serializable = {k: (v.value if hasattr(v, 'value') else v) for k, v in model_config.items()}
+
+        # MLflow logging for D3S1
+        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+
+        logger = MLFlowLogger(
+            tracking_uri=mlflow_tracking_uri,
+            experiment_name=mlflow_experiment_name
+        )
+
+        invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
+        dag_run_id = context.get('dag_run').run_id
+
+        run_name = "D3S1_Model_Build"
+        tags = {
+            "task_type": "model_build",
+            "model_type": task_type,
+            "dag_id": context.get('dag').dag_id,
+            "task_id": context.get('task').task_id,
+            "airflow_dag_run_id": dag_run_id,
+            "invocation_id": invocation_id if invocation_id else 'unknown',
+            "pipeline_step": "D3S1",
+            "dag": "3",
+            "dag_step": "1"
+        }
+        if experiment_name:
+            tags["experiment_name"] = experiment_name
+
+        logger.start_run(run_name=run_name, tags=tags)
+
+        try:
+            # Log model build parameters
+            logger.log_params({
+                'task_type': task_type,
+                'num_classes': num_classes,
+                'num_features': num_features,
+                'num_samples': num_samples,
+                'optimizer': optimizer_str,
+                'epochs': model_config['epochs'],
+                'batch_size': model_config['batch_size'],
+                'validation_split': model_config['validation_split'],
+                'early_stopping_patience': model_config['early_stopping_patience'],
+                'num_folds': len(folds_info),
+                'label_columns': ','.join(label_cols),
+            })
+
+            # Log metrics
+            logger.log_metrics({
+                'num_features': num_features,
+                'num_samples': num_samples,
+                'num_classes': num_classes if num_classes else 0,
+            })
+
+            print(f"{exp_prefix}Logged model build to MLflow run: {run_name}")
+
+        finally:
+            logger.end_run()
+
         context['ti'].xcom_push(key='model_config', value=model_config_serializable)
 
         print(f"\n{exp_prefix}Model Configuration:")
@@ -339,7 +397,7 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
         invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
 
-        run_name = "D3S2_Hyperparameter_Tuning"
+        run_name = "D3S2S0_HPO_Summary"
         tags = {
             "task_type": "hyperparameter_tuning",
             "model_type": task_type,
@@ -347,7 +405,9 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
             "task_id": context.get('task').task_id,
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id if invocation_id else 'unknown',
-            "pipeline_step": "D3S2"
+            "pipeline_step": "D3S2",
+            "dag": "3",
+            "dag_step": "2"
         }
         if experiment_name:
             tags["experiment_name"] = experiment_name
@@ -514,7 +574,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
 
-        run_name = f"D3S3_Model_Train_Fold_{fold_id}"
+        run_name = f"D3S3F{fold_id:02d}_Model_Train_Fold_{fold_id:02d}"
         tags = {
             "task_type": "model_training",
             "model_type": task_type,
@@ -524,7 +584,9 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id if invocation_id else 'unknown',
             "pipeline_step": "D3S3",
-            "hyperparams_tuned": str(best_hyperparams is not None)
+            "hyperparams_tuned": str(best_hyperparams is not None),
+            "dag": "3",
+            "dag_step": "3"
         }
 
         if experiment_name:
@@ -737,7 +799,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
         combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
 
         dag_run_id = context.get('dag_run').run_id
-        run_name = "D3S4_Combined_Model_Register"
+        run_name = "D3S4_Preprocessed_Model_Register"
         tags = {
             "task_type": "combined_pipeline_registration",
             "best_fold_id": str(best_fold['fold_id']),
@@ -746,7 +808,9 @@ def _model_register(config, experiment_name: Optional[str] = None):
             "execution_date": str(context.get('execution_date')),
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id,
-            "pipeline_step": "D3S4"
+            "pipeline_step": "D3S4",
+            "dag": "3",
+            "dag_step": "4"
         }
 
         if experiment_name:
@@ -774,7 +838,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
 
         # Use experiment-scoped model name
         promotion_config = getattr(config, 'PROMOTION', {})
-        base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
+        base_model_name = promotion_config.get('MODEL_NAME', 'model')
         model_name = f"{experiment_name}_{base_model_name}" if experiment_name else base_model_name
 
         registration_tags = {
@@ -882,7 +946,9 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
             "execution_date": str(context.get('execution_date')),
             "airflow_dag_run_id": dag_run_id,
             "invocation_id": invocation_id,
-            "pipeline_step": "D3S5"
+            "pipeline_step": "D3S5",
+            "dag": "3",
+            "dag_step": "5"
         }
 
         if experiment_name:

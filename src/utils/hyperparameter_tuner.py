@@ -220,14 +220,16 @@ class OptunaHyperparameterTuner:
     def _log_trial_to_mlflow(self, trial: optuna.Trial, params: Dict, val_loss: float):
         """Log individual trial results to MLflow as nested run."""
         try:
-            run_name = f"D3S2_HPO_Trial_{trial.number}"
+            run_name = f"D3S2T{trial.number:03d}_HPO_Trial_{trial.number:03d}"
 
             # Build tags consistent with other pipeline runs
             tags = {
                 "task_type": "hyperparameter_tuning_trial",
                 "model_type": self.task_type,
                 "trial_number": str(trial.number),
-                "pipeline_step": "D3S2"
+                "pipeline_step": "D3S2",
+                "dag": "3",
+                "dag_step": "2"
             }
 
             if self.invocation_id:
