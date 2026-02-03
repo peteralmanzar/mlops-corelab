@@ -139,7 +139,7 @@ dmypy.json
 *.tfrecord
 
 # Data files (comment out if you want to track small datasets)
-data/
+/data/
 *.csv
 *.tsv
 *.dat
