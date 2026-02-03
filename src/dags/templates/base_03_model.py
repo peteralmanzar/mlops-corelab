@@ -459,25 +459,6 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
                 'n_trials_failed': study_summary['n_trials_failed'],
             })
 
-            # Log visualizations if enabled
-            if tuning_config.get('MLFLOW_TRACKING', {}).get('LOG_VISUALIZATION', True):
-                try:
-                    import optuna.visualization as vis
-
-                    # Optimization history
-                    fig_history = vis.plot_optimization_history(study)
-                    mlflow.log_figure(fig_history, "visualizations/optimization_history.html")
-
-                    # Parameter importance (may fail with few trials)
-                    if tuning_config.get('MLFLOW_TRACKING', {}).get('LOG_IMPORTANCE', True):
-                        try:
-                            fig_importance = vis.plot_param_importances(study)
-                            mlflow.log_figure(fig_importance, "visualizations/param_importances.html")
-                        except Exception as e:
-                            print(f"{exp_prefix}Could not generate param importance plot: {e}")
-                except Exception as e:
-                    print(f"{exp_prefix}Could not generate visualizations: {e}")
-
             logger.end_run(status="FINISHED")
 
             # Push best hyperparams to XCom
@@ -639,6 +620,21 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
                 params['learning_rate'] = learning_rate
 
             logger.log_params(params)
+
+            # Log feature metadata for serving layer
+            feature_cols_str = ','.join(feature_cols)
+            logger.log_params({
+                'preprocessed_train_columns': feature_cols_str,
+                'feature_count': len(feature_cols)
+            })
+
+            # Log feature dtypes as artifact
+            import tempfile
+            feature_dtypes = {col: str(train_df[col].dtype) for col in feature_cols}
+            with tempfile.NamedTemporaryFile(mode='w', suffix='_dtypes.json', delete=False) as f:
+                json.dump(feature_dtypes, f)
+                dtypes_path = f.name
+            mlflow.log_artifact(dtypes_path, artifact_path='feature_info')
 
             early_stopping = EarlyStopping(
                 monitor='val_loss',
@@ -1019,6 +1015,7 @@ def create_model_dag(
         schedule=[transformed_asset],
         start_date=datetime(2026, 1, 1),
         catchup=False,
+        is_paused_upon_creation=False,
         tags=tags,
     )
 

@@ -808,6 +808,7 @@ def create_preprocess_dag(
         schedule=[split_asset],
         start_date=datetime(2026, 1, 1),
         catchup=False,
+        is_paused_upon_creation=False,
         tags=tags,
     )
 

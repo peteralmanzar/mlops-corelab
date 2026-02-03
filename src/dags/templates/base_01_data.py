@@ -436,6 +436,7 @@ def create_data_dag(
         schedule=None,
         start_date=datetime(2026, 1, 1),
         catchup=False,
+        is_paused_upon_creation=False,
         tags=tags,
     )
 
