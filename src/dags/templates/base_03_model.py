@@ -634,7 +634,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             with tempfile.NamedTemporaryFile(mode='w', suffix='_dtypes.json', delete=False) as f:
                 json.dump(feature_dtypes, f)
                 dtypes_path = f.name
-            mlflow.log_artifact(dtypes_path, artifact_path='feature_info')
+            logger.log_artifact(dtypes_path, artifact_path='feature_info')
 
             early_stopping = EarlyStopping(
                 monitor='val_loss',

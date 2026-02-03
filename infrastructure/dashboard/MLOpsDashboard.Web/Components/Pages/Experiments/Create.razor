@@ -118,8 +118,20 @@
                 @if (Config.Data.FoldType == "stratified")
                 {
                     <div class="mb-3">
-                        <label class="form-label">Stratify Column</label>
-                        <input type="text" class="form-control" @bind="Config.Data.StratifyColumn" />
+                        <label class="form-label">Stratify Column <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @(StratifyColumnError != null ? "is-invalid" : "")"
+                               @bind="Config.Data.StratifyColumn"
+                               @bind:event="oninput"
+                               @onfocus="() => StratifyColumnError = null"
+                               placeholder="e.g., Survived, target" />
+                        @if (StratifyColumnError != null)
+                        {
+                            <div class="invalid-feedback d-block">@StratifyColumnError</div>
+                        }
+                        else
+                        {
+                            <div class="form-text">Column to use for stratified sampling</div>
+                        }
                     </div>
                 }
             }
@@ -624,6 +636,7 @@
     private string? NameValidationError { get; set; }
     private bool IsValidatingName { get; set; }
     private string? TargetValidationError { get; set; }
+    private string? StratifyColumnError { get; set; }
 
     // Pipeline step instances for UI binding
     private ImputerStep Imputer { get; set; } = new();
@@ -797,6 +810,14 @@
             {
                 return;
             }
+
+            // Validate stratify column if stratified fold is selected
+            if (Config.Data.FoldType == "stratified" && string.IsNullOrWhiteSpace(Config.Data.StratifyColumn))
+            {
+                StratifyColumnError = "Stratify column is required when using Stratified K-Fold";
+                return;
+            }
+            StratifyColumnError = null;
         }
 
         // Validate before leaving Step 3

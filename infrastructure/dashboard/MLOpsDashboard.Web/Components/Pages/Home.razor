@@ -139,12 +139,12 @@
 
     private readonly List<ServiceInfo> _services = new()
     {
+        new("Kestra", "Declarative workflows", "http://localhost:8081"),
+        new("JupyterLab", "Data science notebooks", "http://localhost:8888"),
         new("Airflow", "Workflow orchestration", "http://localhost:8080"),
         new("MLflow", "ML experiment tracking", "http://localhost:5000"),
         new("Model API", "ML prediction service", "http://localhost:8000/docs"),
-        new("JupyterLab", "Data science notebooks", "http://localhost:8888"),
         new("pgAdmin", "Database administration", "http://localhost:5050"),
-        new("Kestra", "Declarative workflows", "http://localhost:8081"),
     };
 
     protected override async Task OnInitializedAsync()
