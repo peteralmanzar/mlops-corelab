@@ -402,6 +402,11 @@ services:
             enabled: false
           repository:
             type: postgres
+          source:
+            type: local
+            local:
+              path: /app/flows
+              enabled: true
           storage:
             type: local
             local:
@@ -410,12 +415,20 @@ services:
             type: postgres
           tasks:
             tmp-dir:
-              path: /tmp/kestra-wd/tmp
+              path: /app/tmp
+          plugins:
+            repositories:
+              central:
+                url: https://repo.maven.apache.org/maven2/
+      # API Keys for marketsense flows (accessible via {{ envs.VAR_NAME }})
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-WJRJ9R2L6F6A5AN5}
+      MASSIVE_API_KEY: ${MASSIVE_API_KEY:-EdZwnEDxaFTNLNSpSAH4FSMbKponcXIw}
     volumes:
       - kestra-data:/app/storage
       - ./data:/app/data
+      - ./flows:/app/flows
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/kestra-wd:/tmp/kestra-wd
+      - kestra-tmp:/app/tmp
     ports:
       - "8081:8080"
     healthcheck:
@@ -476,3 +489,4 @@ volumes:
   postgres-data:
   airflow-plugins:
   kestra-data:
+  kestra-tmp:

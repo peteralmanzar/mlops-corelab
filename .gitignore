@@ -168,6 +168,8 @@ mlflow.db
 
 # Kestra
 kestra/
+flows/**/*.yaml
+flows/**/*.yml
 
 # DVC
 .dvc/
