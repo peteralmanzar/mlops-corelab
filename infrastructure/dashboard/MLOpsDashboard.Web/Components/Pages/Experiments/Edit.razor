@@ -183,6 +183,7 @@
                                         <option value="sgd">SGD</option>
                                         <option value="rmsprop">RMSprop</option>
                                         <option value="adamax">Adamax</option>
+                                        <option value="nadam">Nadam</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6 mb-3">
@@ -520,7 +521,7 @@
 
     private string LearningRateLowText
     {
-        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("G4");
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("0.######");
         set
         {
             if (double.TryParse(value, out var v))
@@ -530,7 +531,7 @@
 
     private string LearningRateHighText
     {
-        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("G4");
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("0.######");
         set
         {
             if (double.TryParse(value, out var v))

@@ -621,20 +621,37 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
 
             logger.log_params(params)
 
-            # Log feature metadata for serving layer
-            feature_cols_str = ','.join(feature_cols)
-            logger.log_params({
-                'preprocessed_train_columns': feature_cols_str,
-                'feature_count': len(feature_cols)
-            })
+            # Log RAW input feature metadata for serving layer (not post-processed)
+            # Get raw columns from source data, excluding label column
+            raw_data_path = config.DATA.get("RAW_PATH_FILE")
+            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
 
-            # Log feature dtypes as artifact
-            import tempfile
-            feature_dtypes = {col: str(train_df[col].dtype) for col in feature_cols}
-            with tempfile.NamedTemporaryFile(mode='w', suffix='_dtypes.json', delete=False) as f:
-                json.dump(feature_dtypes, f)
-                dtypes_path = f.name
-            logger.log_artifact(dtypes_path, artifact_path='feature_info')
+            if raw_data_path and os.path.exists(raw_data_path):
+                raw_df = pd.read_csv(raw_data_path, nrows=1)
+                # Exclude label columns from input features
+                raw_input_columns = [col for col in raw_df.columns if col not in label_cols]
+                raw_dtypes = {col: str(raw_df[col].dtype) for col in raw_input_columns}
+
+                logger.log_params({
+                    'raw_input_columns': ','.join(raw_input_columns),
+                    'raw_feature_count': len(raw_input_columns)
+                })
+
+                # Log raw dtypes as artifact
+                import tempfile
+                with tempfile.NamedTemporaryFile(mode='w', suffix='_dtypes.json', delete=False) as f:
+                    json.dump(raw_dtypes, f)
+                    dtypes_path = f.name
+                logger.log_artifact(dtypes_path, artifact_path='feature_info')
+                print(f"{exp_prefix}Logged raw input columns: {len(raw_input_columns)} features")
+            else:
+                # Fallback to post-processed columns if raw data not available
+                feature_cols_str = ','.join(feature_cols)
+                logger.log_params({
+                    'raw_input_columns': feature_cols_str,
+                    'raw_feature_count': len(feature_cols)
+                })
+                print(f"{exp_prefix}Warning: Raw data not found, using processed columns")
 
             early_stopping = EarlyStopping(
                 monitor='val_loss',
@@ -679,7 +696,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             print(f"\n{exp_prefix}Logging model to MLflow...")
             logger.log_keras_model(
                 model=model,
-                artifact_path="model"
+                artifact_path="fold_model"
             )
 
             history_df = pd.DataFrame(history.history)
@@ -791,7 +808,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
 
         builder = ModelBuilder(config)
         preprocessing_pipeline = builder.load_preprocessing_pipeline(pipeline_run_id=pipeline_mlflow_run_id, artifact_path='preprocessing_pipeline')
-        trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='model')
+        trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='fold_model')
         combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
 
         dag_run_id = context.get('dag_run').run_id
@@ -822,11 +839,17 @@ def _model_register(config, experiment_name: Optional[str] = None):
             best_fold_run = mlflow.get_run(best_fold['run_id'])
             best_fold_params = best_fold_run.data.params
 
-            # Log feature parameters
+            # Log feature parameters (transfer raw input columns from best fold)
             feature_params = {}
-            if 'preprocessed_train_columns' in best_fold_params:
+            # Use raw_input_columns if available, fall back to preprocessed_train_columns
+            if 'raw_input_columns' in best_fold_params:
+                feature_params['preprocessed_train_columns'] = best_fold_params['raw_input_columns']
+            elif 'preprocessed_train_columns' in best_fold_params:
                 feature_params['preprocessed_train_columns'] = best_fold_params['preprocessed_train_columns']
-            if 'feature_count' in best_fold_params:
+
+            if 'raw_feature_count' in best_fold_params:
+                feature_params['feature_count'] = best_fold_params['raw_feature_count']
+            elif 'feature_count' in best_fold_params:
                 feature_params['feature_count'] = best_fold_params['feature_count']
 
             if feature_params:
@@ -864,7 +887,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
         except Exception:
             input_example = None
 
-        logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='combined_model', input_example=input_example)
+        logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='preprocessed_model', input_example=input_example)
         logger.log_artifact(combined_path, artifact_path='combined_artifacts')
 
         combined_run_id = logger.get_run_id()
