@@ -1,0 +1,1149 @@
+@page "/experiments/create"
+@using System.IO
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Forms
+@using MLOpsDashboard.Core.Models
+@using MLOpsDashboard.Core.Models.ConfigSections
+@using MLOpsDashboard.Web.Services
+@inject TemplateService TemplateService
+@inject DagGeneratorService DagGenerator
+@inject NavigationManager Navigation
+
+<PageTitle>Create Experiment</PageTitle>
+
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2 class="mb-0">Create New Experiment</h2>
+        <div>
+            <label class="btn btn-outline-primary mb-0">
+                <i class="bi bi-upload me-2"></i>Import Config
+                <InputFile OnChange="HandleConfigImport" accept=".json" style="display: none;" />
+            </label>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ImportMessage))
+    {
+        <div class="alert @(ImportSuccess ? "alert-success" : "alert-warning") alert-dismissible fade show">
+            @ImportMessage
+            <button type="button" class="btn-close" @onclick="() => ImportMessage = null"></button>
+        </div>
+    }
+
+    <!-- Progress Steps -->
+    <div class="row mb-4">
+        <div class="col">
+            <div class="d-flex justify-content-between">
+                @for (int i = 1; i <= 4; i++)
+                {
+                    var step = i;
+                    <div class="text-center flex-fill">
+                        <div class="rounded-circle d-inline-flex align-items-center justify-content-center @(CurrentStep >= step ? "bg-primary text-white" : "bg-secondary text-white")"
+                             style="width: 40px; height: 40px;">
+                            @step
+                        </div>
+                        <div class="small mt-1">@GetStepName(step)</div>
+                    </div>
+                    @if (i < 4)
+                    {
+                        <div class="flex-fill d-flex align-items-center">
+                            <hr class="w-100 @(CurrentStep > step ? "border-primary" : "")" />
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- Step Content -->
+    <div class="card">
+        <div class="card-body">
+            @if (CurrentStep == 1)
+            {
+                <!-- Data Step -->
+                <h4>Step 1: Data Configuration</h4>
+                @if (IsImported)
+                {
+                    <div class="alert alert-info py-2 mb-3">
+                        <small><i class="bi bi-info-circle me-1"></i>Configuration imported. Review and modify values as needed.</small>
+                    </div>
+                }
+                <div class="mb-3">
+                    <label class="form-label">Experiment Name</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control @(NameValidationError != null ? "is-invalid" : "")"
+                               @bind="ExperimentName"
+                               @bind:event="oninput"
+                               @onblur="ValidateExperimentName"
+                               placeholder="e.g., housing_prediction" />
+                        @if (IsValidatingName)
+                        {
+                            <span class="input-group-text">
+                                <span class="spinner-border spinner-border-sm"></span>
+                            </span>
+                        }
+                    </div>
+                    @if (NameValidationError != null)
+                    {
+                        <div class="invalid-feedback d-block">@NameValidationError</div>
+                    }
+                    else
+                    {
+                        <div class="form-text">Lowercase, alphanumeric with underscores only</div>
+                    }
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Data Source Path</label>
+                    <input type="text" class="form-control" @bind="Config.Data.RawPathFile" />
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Split Type</label>
+                    <select class="form-select" @bind="Config.Data.FoldType">
+                        <option value="">Simple Split</option>
+                        <option value="kfold">K-Fold</option>
+                        <option value="stratified">Stratified K-Fold</option>
+                        <option value="timeseries">Time Series</option>
+                    </select>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Test Split Ratio</label>
+                        <input type="number" class="form-control" @bind="Config.Data.TrainTestSplit" step="0.05" min="0.1" max="0.5" />
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Number of Folds</label>
+                        <input type="number" class="form-control" @bind="Config.Data.NumFolds" min="2" max="10" />
+                    </div>
+                </div>
+                @if (Config.Data.FoldType == "stratified")
+                {
+                    <div class="mb-3">
+                        <label class="form-label">Stratify Column <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control @(StratifyColumnError != null ? "is-invalid" : "")"
+                               @bind="Config.Data.StratifyColumn"
+                               @bind:event="oninput"
+                               @onfocus="() => StratifyColumnError = null"
+                               placeholder="e.g., Survived, target" />
+                        @if (StratifyColumnError != null)
+                        {
+                            <div class="invalid-feedback d-block">@StratifyColumnError</div>
+                        }
+                        else
+                        {
+                            <div class="form-text">Column to use for stratified sampling</div>
+                        }
+                    </div>
+                }
+            }
+            else if (CurrentStep == 2)
+            {
+                <!-- Preprocessing Step -->
+                <h4>Step 2: Preprocessing Pipeline</h4>
+                <p class="text-muted">Configure the preprocessing steps. Leave columns empty to skip a transformer.</p>
+                <div class="mb-3">
+                    <label class="form-label">Features Output Path</label>
+                    <input type="text" class="form-control" @bind="Config.Preprocessing.FeaturesPath" />
+                </div>
+
+                <div class="accordion" id="pipelineAccordion">
+                    <!-- Imputer -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "imputer" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("imputer"))">
+                                <strong>Imputer</strong>&nbsp;- Fill missing values
+                                @if (Imputer.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@Imputer.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "imputer" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="ImputerColumnsText" placeholder="e.g., Age, Fare, Cabin" />
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Numeric Strategy</label>
+                                        <select class="form-select" @bind="Imputer.NumericStrategy">
+                                            <option value="mean">Mean</option>
+                                            <option value="median">Median</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Categorical Strategy</label>
+                                        <select class="form-select" @bind="Imputer.CategoricalStrategy">
+                                            <option value="mode">Mode (most frequent)</option>
+                                            <option value="constant">Constant value</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Scaler -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "scaler" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("scaler"))">
+                                <strong>Scaler</strong>&nbsp;- Standardize numeric features
+                                @if (Scaler.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@Scaler.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "scaler" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="ScalerColumnsText" placeholder="e.g., Age, Fare, SibSp" />
+                                    <div class="form-text">Columns will be standardized to zero mean and unit variance</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- OneHot -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "onehot" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("onehot"))">
+                                <strong>One-Hot Encoder</strong>&nbsp;- Encode categorical features
+                                @if (OneHot.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@OneHot.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "onehot" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="OneHotColumnsText" placeholder="e.g., Sex, Embarked, Pclass" />
+                                    <div class="form-text">Categorical columns will be converted to binary columns</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Drop -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "drop" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("drop"))">
+                                <strong>Drop Columns</strong>&nbsp;- Remove columns
+                                @if (Drop.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@Drop.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "drop" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="DropColumnsText" placeholder="e.g., PassengerId, Name, Ticket" />
+                                    <div class="form-text">These columns will be removed from the dataset</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- DateSplit -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "datesplit" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("datesplit"))">
+                                <strong>Date Split</strong>&nbsp;- Extract date components
+                                @if (DateSplit.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@DateSplit.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "datesplit" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Date Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="DateSplitColumnsText" placeholder="e.g., date, timestamp" />
+                                    <div class="form-text">Extracts year, month, day, weekday from date columns</div>
+                                </div>
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" @bind="DateSplit.DropColumns" id="dropDateColumns" />
+                                    <label class="form-check-label" for="dropDateColumns">Drop original date columns after splitting</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Index -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "index" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("index"))">
+                                <strong>Set Index</strong>&nbsp;- Set DataFrame index
+                                @if (!string.IsNullOrWhiteSpace(Index.Column))
+                                {
+                                    <span class="badge bg-success ms-2">@Index.Column</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "index" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Index Column</label>
+                                    <input type="text" class="form-control" @bind="Index.Column" placeholder="e.g., PassengerId" />
+                                    <div class="form-text">This column will become the DataFrame index</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sequencer -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "sequencer" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("sequencer"))">
+                                <strong>Sequencer</strong>&nbsp;- Create sequences for time series
+                                @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
+                                {
+                                    <span class="badge bg-success ms-2">@Sequencer.Column (len: @Sequencer.SequenceLength)</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "sequencer" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Target Column</label>
+                                        <input type="text" class="form-control" @bind="Sequencer.Column" placeholder="e.g., Close" />
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Sequence Length</label>
+                                        <input type="number" class="form-control" @bind="Sequencer.SequenceLength" min="1" max="500" />
+                                    </div>
+                                </div>
+                                <div class="form-text">Creates sliding window sequences for LSTM/RNN models</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+            else if (CurrentStep == 3)
+            {
+                <!-- Model Step -->
+                <h4>Step 3: Model Configuration</h4>
+                <div class="mb-3">
+                    <label class="form-label">Target Column(s) <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control @(TargetValidationError != null ? "is-invalid" : "")"
+                           @bind="LabelColumnsText"
+                           @bind:event="oninput"
+                           placeholder="e.g., Survived, Price" />
+                    @if (TargetValidationError != null)
+                    {
+                        <div class="invalid-feedback d-block">@TargetValidationError</div>
+                    }
+                    else
+                    {
+                        <div class="form-text">Comma-separated for multiple targets</div>
+                    }
+                </div>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Epochs</label>
+                        <input type="number" class="form-control" @bind="Config.Model.Epochs" min="10" max="1000" />
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Batch Size</label>
+                        <input type="number" class="form-control" @bind="Config.Model.BatchSize" min="8" max="256" />
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Early Stopping Patience</label>
+                        <input type="number" class="form-control" @bind="Config.Model.EarlyStoppingPatience" min="3" max="50" />
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Optimizer</label>
+                        <select class="form-select" @bind="Config.Model.Optimizer">
+                            <option value="adam">Adam</option>
+                            <option value="sgd">SGD</option>
+                            <option value="rmsprop">RMSprop</option>
+                            <option value="adamax">Adamax</option>
+                            <option value="nadam">Nadam</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label">Validation Split</label>
+                        <input type="number" class="form-control" @bind="Config.Model.ValidationSplit" step="0.05" min="0.1" max="0.3" />
+                    </div>
+                </div>
+
+                <!-- Hyperparameter Tuning Section -->
+                <hr class="my-4" />
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="mb-0">Hyperparameter Tuning (Optuna)</h5>
+                    <div class="form-check form-switch">
+                        <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.Enabled" id="enableTuning" />
+                        <label class="form-check-label" for="enableTuning">Enable</label>
+                    </div>
+                </div>
+
+                @if (Config.HyperparameterTuning.Enabled)
+                {
+                    <div class="card bg-light mb-3">
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label">Number of Trials</label>
+                                    <input type="number" class="form-control" @bind="Config.HyperparameterTuning.NTrials" min="5" max="500" />
+                                    <div class="form-text">Optuna optimization trials</div>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label">Timeout (seconds)</label>
+                                    <input type="number" class="form-control" @bind="Config.HyperparameterTuning.TimeoutSeconds" min="300" max="86400" />
+                                    <div class="form-text">Max time for tuning</div>
+                                </div>
+                                <div class="col-md-4 mb-3">
+                                    <label class="form-label">Tuning Epochs</label>
+                                    <input type="number" class="form-control" @bind="Config.HyperparameterTuning.TuningEpochs" min="5" max="100" />
+                                    <div class="form-text">Epochs per trial</div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Sampler</label>
+                                    <select class="form-select" @bind="Config.HyperparameterTuning.Sampler">
+                                        <option value="TPE">TPE (Recommended)</option>
+                                        <option value="RandomSampler">Random</option>
+                                        <option value="CmaEsSampler">CMA-ES</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Pruner</label>
+                                    <select class="form-select" @bind="Config.HyperparameterTuning.Pruner.Type">
+                                        <option value="MedianPruner">Median Pruner (Recommended)</option>
+                                        <option value="SuccessiveHalvingPruner">Successive Halving</option>
+                                        <option value="HyperbandPruner">Hyperband</option>
+                                        <option value="NopPruner">No Pruning</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <h6 class="mt-3">Architecture Search Space</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Hidden Layers Range</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.NumHiddenLayers.Low" min="1" max="10" />
+                                        <span class="input-group-text">to</span>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.NumHiddenLayers.High" min="1" max="10" />
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Hidden Units Range</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.HiddenUnits.Low" min="8" max="1024" />
+                                        <span class="input-group-text">to</span>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.HiddenUnits.High" min="8" max="1024" />
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Dropout Rate Range</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.DropoutRate.Low" step="0.1" min="0" max="0.9" />
+                                        <span class="input-group-text">to</span>
+                                        <input type="number" class="form-control" @bind="Config.HyperparameterTuning.SearchSpace.Architecture.DropoutRate.High" step="0.1" min="0" max="0.9" />
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Activations</label>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        @foreach (var act in AvailableActivations)
+                                        {
+                                            <div class="form-check form-check-inline">
+                                                <input class="form-check-input" type="checkbox" id="create_act_@act"
+                                                       checked="@Config.HyperparameterTuning.SearchSpace.Architecture.Activation.Contains(act)"
+                                                       @onchange="e => ToggleActivation(act, (bool)e.Value!)" />
+                                                <label class="form-check-label small" for="create_act_@act">@act</label>
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+
+                            <h6 class="mt-3">Training Search Space</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Learning Rate Range (log scale)</label>
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" @bind="LearningRateLowText" placeholder="1e-5" />
+                                        <span class="input-group-text">to</span>
+                                        <input type="text" class="form-control" @bind="LearningRateHighText" placeholder="1e-2" />
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Batch Sizes</label>
+                                    <input type="text" class="form-control" @bind="BatchSizesText" placeholder="16, 32, 64, 128, 256" />
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Optimizers to Try</label>
+                                <div class="d-flex flex-wrap gap-2">
+                                    @foreach (var opt in AvailableOptimizers)
+                                    {
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="create_opt_@opt"
+                                                   checked="@Config.HyperparameterTuning.SearchSpace.Training.Optimizer.Contains(opt)"
+                                                   @onchange="e => ToggleOptimizer(opt, (bool)e.Value!)" />
+                                            <label class="form-check-label small" for="create_opt_@opt">@opt</label>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+
+                            <h6 class="mt-3">MLflow Tracking</h6>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogTrials" id="logTrials" />
+                                        <label class="form-check-label" for="logTrials">Log Trials</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogImportance" id="logImportance" />
+                                        <label class="form-check-label" for="logImportance">Log Param Importance</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" @bind="Config.HyperparameterTuning.MlflowTracking.LogVisualization" id="logViz" />
+                                        <label class="form-check-label" for="logViz">Log Visualizations</label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+            else if (CurrentStep == 4)
+            {
+                <!-- Review Step -->
+                <h4>Step 4: Review & Generate</h4>
+                <div class="row">
+                    <div class="col-md-6">
+                        <h5>Experiment: @ExperimentName</h5>
+                        <table class="table table-sm">
+                            <tr><th>Data Source</th><td>@Config.Data.RawPathFile</td></tr>
+                            <tr><th>Split Type</th><td>@(Config.Data.FoldType ?? "Simple")</td></tr>
+                            <tr><th>Folds</th><td>@Config.Data.NumFolds</td></tr>
+                            <tr><th>Target</th><td>@string.Join(", ", Config.Model.LabelColumns)</td></tr>
+                            <tr><th>Epochs</th><td>@Config.Model.Epochs</td></tr>
+                            <tr><th>Optimizer</th><td>@Config.Model.Optimizer</td></tr>
+                            <tr><th>HP Tuning</th><td>@(Config.HyperparameterTuning.Enabled ? $"Enabled ({Config.HyperparameterTuning.NTrials} trials)" : "Disabled")</td></tr>
+                        </table>
+                        <h6>Pipeline Steps</h6>
+                        <ul class="list-group list-group-flush">
+                            @if (Imputer.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">Imputer: @string.Join(", ", Imputer.Columns)</li>
+                            }
+                            @if (Scaler.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">Scaler: @string.Join(", ", Scaler.Columns)</li>
+                            }
+                            @if (OneHot.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">OneHot: @string.Join(", ", OneHot.Columns)</li>
+                            }
+                            @if (Drop.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">Drop: @string.Join(", ", Drop.Columns)</li>
+                            }
+                            @if (DateSplit.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">DateSplit: @string.Join(", ", DateSplit.Columns)</li>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(Index.Column))
+                            {
+                                <li class="list-group-item py-1">Index: @Index.Column</li>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
+                            {
+                                <li class="list-group-item py-1">Sequencer: @Sequencer.Column (len: @Sequencer.SequenceLength)</li>
+                            }
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h5>Files to Generate</h5>
+                        <ul class="list-group list-group-flush">
+                            <li class="list-group-item">@(ExperimentName)_01_data.py</li>
+                            <li class="list-group-item">@(ExperimentName)_02_preprocess.py</li>
+                            <li class="list-group-item">@(ExperimentName)_03_model.py</li>
+                            <li class="list-group-item">@(ExperimentName)_04_promote.py</li>
+                            <li class="list-group-item">config.json</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <h5>Configuration Preview</h5>
+                    <pre class="bg-dark text-light p-3 rounded" style="max-height: 300px; overflow: auto;">@ConfigJson</pre>
+                </div>
+            }
+        </div>
+        <div class="card-footer d-flex justify-content-between">
+            <button class="btn btn-outline-secondary" @onclick="PreviousStep" disabled="@(CurrentStep == 1)">
+                Previous
+            </button>
+            @if (CurrentStep < 4)
+            {
+                <button class="btn btn-primary" @onclick="NextStep">Next</button>
+            }
+            else
+            {
+                <button class="btn btn-success" @onclick="GenerateExperiment" disabled="@(IsGenerating || GenerationComplete)">
+                    @if (IsGenerating)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2"></span>
+                    }
+                    Generate Experiment
+                </button>
+            }
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ErrorMessage))
+    {
+        <div class="alert alert-danger mt-3">@ErrorMessage</div>
+    }
+    @if (!string.IsNullOrEmpty(SuccessMessage))
+    {
+        <div class="alert alert-success mt-3">
+            @SuccessMessage
+            <div class="mt-2">
+                <a href="/experiments" class="btn btn-sm btn-outline-success">View All Experiments</a>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private int CurrentStep { get; set; } = 1;
+    private string _experimentName = "";
+    private string ExperimentName
+    {
+        get => _experimentName;
+        set
+        {
+            _experimentName = value;
+            UpdateDefaultPaths();
+            // Clear validation error when name changes
+            NameValidationError = null;
+        }
+    }
+    private ExperimentConfig Config { get; set; } = new();
+    private bool IsGenerating { get; set; }
+    private bool GenerationComplete { get; set; }
+    private string? ErrorMessage { get; set; }
+    private string? SuccessMessage { get; set; }
+    private ExperimentTemplate? DefaultTemplate { get; set; }
+
+    // Import config state
+    private string? ImportMessage { get; set; }
+    private bool ImportSuccess { get; set; }
+    private bool IsImported { get; set; }
+
+    // Validation state
+    private string? NameValidationError { get; set; }
+    private bool IsValidatingName { get; set; }
+    private string? TargetValidationError { get; set; }
+    private string? StratifyColumnError { get; set; }
+
+    // Pipeline step instances for UI binding
+    private ImputerStep Imputer { get; set; } = new();
+    private ScalerStep Scaler { get; set; } = new();
+    private OneHotStep OneHot { get; set; } = new();
+    private DropStep Drop { get; set; } = new();
+    private DateSplitStep DateSplit { get; set; } = new();
+    private IndexStep Index { get; set; } = new();
+    private SequencerStep Sequencer { get; set; } = new();
+
+    // Accordion state - which panel is open (null = none)
+    private string? OpenAccordion { get; set; }
+
+    private void ToggleAccordion(string name)
+    {
+        OpenAccordion = OpenAccordion == name ? null : name;
+    }
+
+    // Text bindings for comma-separated column input
+    private string ImputerColumnsText
+    {
+        get => string.Join(", ", Imputer.Columns);
+        set => Imputer.Columns = ParseColumns(value);
+    }
+
+    private string ScalerColumnsText
+    {
+        get => string.Join(", ", Scaler.Columns);
+        set => Scaler.Columns = ParseColumns(value);
+    }
+
+    private string OneHotColumnsText
+    {
+        get => string.Join(", ", OneHot.Columns);
+        set => OneHot.Columns = ParseColumns(value);
+    }
+
+    private string DropColumnsText
+    {
+        get => string.Join(", ", Drop.Columns);
+        set => Drop.Columns = ParseColumns(value);
+    }
+
+    private string DateSplitColumnsText
+    {
+        get => string.Join(", ", DateSplit.Columns);
+        set => DateSplit.Columns = ParseColumns(value);
+    }
+
+    private string LabelColumnsText
+    {
+        get => string.Join(", ", Config.Model.LabelColumns);
+        set
+        {
+            Config.Model.LabelColumns = ParseColumns(value);
+            TargetValidationError = null;
+        }
+    }
+
+    private static List<string> ParseColumns(string value)
+    {
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .ToList();
+    }
+
+    // Hyperparameter tuning - available options for multiselect
+    private List<string> AvailableActivations = new() { "relu", "tanh", "elu", "selu", "sigmoid", "leaky_relu" };
+    private List<string> AvailableOptimizers = new() { "adam", "sgd", "rmsprop", "adamax", "nadam" };
+
+    private void ToggleActivation(string activation, bool selected)
+    {
+        var list = Config.HyperparameterTuning.SearchSpace.Architecture.Activation;
+        if (selected && !list.Contains(activation))
+            list.Add(activation);
+        else if (!selected)
+            list.Remove(activation);
+        StateHasChanged();
+    }
+
+    private void ToggleOptimizer(string optimizer, bool selected)
+    {
+        var list = Config.HyperparameterTuning.SearchSpace.Training.Optimizer;
+        if (selected && !list.Contains(optimizer))
+            list.Add(optimizer);
+        else if (!selected)
+            list.Remove(optimizer);
+        StateHasChanged();
+    }
+
+    private string BatchSizesText
+    {
+        get => string.Join(", ", Config.HyperparameterTuning.SearchSpace.Training.BatchSize);
+        set => Config.HyperparameterTuning.SearchSpace.Training.BatchSize = ParseIntList(value);
+    }
+
+    private string LearningRateLowText
+    {
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low.ToString("0.######");
+        set
+        {
+            if (double.TryParse(value, out var v))
+                Config.HyperparameterTuning.SearchSpace.Training.LearningRate.Low = v;
+        }
+    }
+
+    private string LearningRateHighText
+    {
+        get => Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High.ToString("0.######");
+        set
+        {
+            if (double.TryParse(value, out var v))
+                Config.HyperparameterTuning.SearchSpace.Training.LearningRate.High = v;
+        }
+    }
+
+    private static List<int> ParseIntList(string value)
+    {
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .Where(s => int.TryParse(s, out _))
+            .Select(int.Parse)
+            .ToList();
+    }
+
+    private string ConfigJson
+    {
+        get
+        {
+            // Build the pipeline steps from UI
+            BuildPipelineSteps();
+            return JsonSerializer.Serialize(Config, new JsonSerializerOptions { WriteIndented = true });
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Load default template
+        DefaultTemplate = await TemplateService.GetTemplateByNameAsync("baseline_template");
+    }
+
+    private void UpdateDefaultPaths()
+    {
+        if (!string.IsNullOrWhiteSpace(_experimentName))
+        {
+            Config.Data.RawPathFile = $"/opt/airflow/data/{_experimentName}/data.csv";
+            Config.Data.ProcessedPath = $"/opt/airflow/data/{_experimentName}/processed";
+            Config.Preprocessing.FeaturesPath = $"/opt/airflow/data/{_experimentName}/features";
+        }
+    }
+
+    private string GetStepName(int step) => step switch
+    {
+        1 => "Data",
+        2 => "Preprocessing",
+        3 => "Model",
+        4 => "Review",
+        _ => ""
+    };
+
+    private async Task NextStep()
+    {
+        // Validate before leaving Step 1
+        if (CurrentStep == 1)
+        {
+            if (string.IsNullOrWhiteSpace(ExperimentName))
+            {
+                NameValidationError = "Experiment name is required";
+                return;
+            }
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(ExperimentName, @"^[a-z][a-z0-9_]*$"))
+            {
+                NameValidationError = "Must be lowercase, start with a letter, and contain only letters, numbers, and underscores";
+                return;
+            }
+
+            // Check for duplicate name
+            await ValidateExperimentName();
+            if (NameValidationError != null)
+            {
+                return;
+            }
+
+            // Validate stratify column if stratified fold is selected
+            if (Config.Data.FoldType == "stratified" && string.IsNullOrWhiteSpace(Config.Data.StratifyColumn))
+            {
+                StratifyColumnError = "Stratify column is required when using Stratified K-Fold";
+                return;
+            }
+            StratifyColumnError = null;
+        }
+
+        // Validate before leaving Step 3
+        if (CurrentStep == 3)
+        {
+            if (Config.Model.LabelColumns.Count == 0)
+            {
+                TargetValidationError = "Target column is required";
+                return;
+            }
+            TargetValidationError = null;
+        }
+
+        if (CurrentStep < 4)
+        {
+            CurrentStep++;
+        }
+    }
+
+    private void PreviousStep()
+    {
+        if (CurrentStep > 1)
+        {
+            CurrentStep--;
+        }
+    }
+
+    private void BuildPipelineSteps()
+    {
+        var steps = new List<PipelineStep>();
+
+        // Add steps in order (only non-empty ones will be serialized)
+        steps.Add(Imputer);
+        steps.Add(Scaler);
+        steps.Add(OneHot);
+        steps.Add(Drop);
+        steps.Add(DateSplit);
+        steps.Add(Index);
+        steps.Add(Sequencer);
+
+        Config.Preprocessing.PipelineSpec.Steps = steps;
+    }
+
+    private async Task GenerateExperiment()
+    {
+        ErrorMessage = null;
+        SuccessMessage = null;
+
+        // Validation
+        if (string.IsNullOrWhiteSpace(ExperimentName))
+        {
+            ErrorMessage = "Experiment name is required";
+            return;
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(ExperimentName, @"^[a-z][a-z0-9_]*$"))
+        {
+            ErrorMessage = "Experiment name must be lowercase, start with a letter, and contain only letters, numbers, and underscores";
+            return;
+        }
+
+        // Final check for duplicate name
+        if (await TemplateService.ExperimentExistsAsync(ExperimentName))
+        {
+            ErrorMessage = $"An experiment named '{ExperimentName}' already exists. Please choose a different name.";
+            return;
+        }
+
+        IsGenerating = true;
+        StateHasChanged();
+
+        try
+        {
+            // Build pipeline steps before generation
+            BuildPipelineSteps();
+
+            // Set experiment-specific values
+            Config.Mlflow.ExperimentName = ExperimentName;
+            Config.Promotion.ModelName = $"{ExperimentName}_model";
+
+            // Generate the DAG files
+            var result = await DagGenerator.GenerateExperimentAsync(ExperimentName, Config);
+
+            if (result.Success)
+            {
+                // Get or create template for foreign key
+                var templateId = DefaultTemplate?.Id ?? Guid.Empty;
+
+                if (templateId == Guid.Empty)
+                {
+                    // Create a default template if none exists
+                    var newTemplate = new ExperimentTemplate
+                    {
+                        Name = "baseline_template",
+                        Description = "Auto-created baseline template",
+                        TemplateType = "full_pipeline"
+                    };
+                    var created = await TemplateService.CreateTemplateAsync(newTemplate);
+                    templateId = created.Id;
+                }
+
+                // Save experiment record
+                var experiment = new GeneratedExperiment
+                {
+                    Name = ExperimentName,
+                    TemplateId = templateId,
+                    ConfigSnapshot = JsonDocument.Parse(JsonSerializer.Serialize(Config)),
+                    GeneratedPath = result.GeneratedPath,
+                    Status = "generated"
+                };
+                await TemplateService.CreateExperimentAsync(experiment);
+
+                GenerationComplete = true;
+                StateHasChanged();
+
+                // Redirect to experiments list immediately (forceLoad ensures navigation)
+                Navigation.NavigateTo("/experiments", forceLoad: true);
+            }
+            else
+            {
+                ErrorMessage = $"Failed to generate experiment: {result.ErrorMessage}";
+            }
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            IsGenerating = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ValidateExperimentName()
+    {
+        if (string.IsNullOrWhiteSpace(ExperimentName))
+        {
+            NameValidationError = null;
+            return;
+        }
+
+        // Check format first
+        if (!System.Text.RegularExpressions.Regex.IsMatch(ExperimentName, @"^[a-z][a-z0-9_]*$"))
+        {
+            NameValidationError = "Must be lowercase, start with a letter, and contain only letters, numbers, and underscores";
+            return;
+        }
+
+        IsValidatingName = true;
+        StateHasChanged();
+
+        try
+        {
+            var exists = await TemplateService.ExperimentExistsAsync(ExperimentName);
+            if (exists)
+            {
+                NameValidationError = $"An experiment named '{ExperimentName}' already exists";
+            }
+            else
+            {
+                NameValidationError = null;
+            }
+        }
+        finally
+        {
+            IsValidatingName = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleConfigImport(InputFileChangeEventArgs e)
+    {
+        ImportMessage = null;
+        ImportSuccess = false;
+        IsImported = false;
+
+        try
+        {
+            var file = e.File;
+            if (file == null)
+            {
+                return;
+            }
+
+            if (!file.Name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+            {
+                ImportMessage = "Please select a JSON file";
+                return;
+            }
+
+            // Read the file content (limit to 1MB)
+            using var stream = file.OpenReadStream(maxAllowedSize: 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+
+            // Parse the JSON
+            var options = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            };
+            var importedConfig = JsonSerializer.Deserialize<ExperimentConfig>(json, options);
+
+            if (importedConfig == null)
+            {
+                ImportMessage = "Failed to parse configuration file";
+                return;
+            }
+
+            // Apply imported config
+            Config = importedConfig;
+
+            // Extract experiment name from MLflow config if available
+            if (!string.IsNullOrWhiteSpace(importedConfig.Mlflow?.ExperimentName))
+            {
+                var importedName = importedConfig.Mlflow.ExperimentName;
+                // Append _copy if name already exists to suggest a new name
+                if (await TemplateService.ExperimentExistsAsync(importedName))
+                {
+                    ExperimentName = $"{importedName}_copy";
+                    ImportMessage = $"Configuration imported. Note: '{importedName}' already exists, renamed to '{ExperimentName}'";
+                }
+                else
+                {
+                    ExperimentName = importedName;
+                    ImportMessage = "Configuration imported successfully. Review and modify values as needed.";
+                }
+            }
+            else
+            {
+                ImportMessage = "Configuration imported successfully. Please enter an experiment name.";
+            }
+
+            // Populate pipeline steps from imported config
+            PopulatePipelineStepsFromConfig();
+
+            ImportSuccess = true;
+            IsImported = true;
+
+            // Stay on step 1 so user can review
+            CurrentStep = 1;
+            StateHasChanged();
+        }
+        catch (JsonException ex)
+        {
+            ImportMessage = $"Invalid JSON format: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            ImportMessage = $"Error importing config: {ex.Message}";
+        }
+    }
+
+    private void PopulatePipelineStepsFromConfig()
+    {
+        // Reset all pipeline step objects
+        Imputer = new ImputerStep();
+        Scaler = new ScalerStep();
+        OneHot = new OneHotStep();
+        Drop = new DropStep();
+        DateSplit = new DateSplitStep();
+        Index = new IndexStep();
+        Sequencer = new SequencerStep();
+
+        // Populate from imported config
+        if (Config.Preprocessing?.PipelineSpec?.Steps != null)
+        {
+            foreach (var step in Config.Preprocessing.PipelineSpec.Steps)
+            {
+                switch (step)
+                {
+                    case ImputerStep imputer:
+                        Imputer = imputer;
+                        break;
+                    case ScalerStep scaler:
+                        Scaler = scaler;
+                        break;
+                    case OneHotStep oneHot:
+                        OneHot = oneHot;
+                        break;
+                    case DropStep drop:
+                        Drop = drop;
+                        break;
+                    case DateSplitStep dateSplit:
+                        DateSplit = dateSplit;
+                        break;
+                    case IndexStep index:
+                        Index = index;
+                        break;
+                    case SequencerStep sequencer:
+                        Sequencer = sequencer;
+                        break;
+                }
+            }
+        }
+    }
+}

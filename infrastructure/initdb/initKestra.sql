@@ -1,0 +1,8 @@
+CREATE DATABASE kestra;
+
+CREATE USER kestra WITH ENCRYPTED PASSWORD 'kestra_pwd';
+GRANT ALL PRIVILEGES ON DATABASE kestra TO kestra;
+
+\c kestra;
+GRANT ALL ON SCHEMA public TO kestra;
+GRANT CREATE ON SCHEMA public TO kestra;

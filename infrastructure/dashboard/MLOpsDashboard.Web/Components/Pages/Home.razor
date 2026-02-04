@@ -1,0 +1,157 @@
+@page "/"
+@using MLOpsDashboard.Web.Services
+@inject MlflowApiClient MlflowClient
+@inject TemplateService TemplateService
+
+<PageTitle>MLOps Dashboard</PageTitle>
+
+<div class="container-fluid">
+    <div class="row mb-4">
+        <div class="col">
+            <h1 class="display-5">ML Workbench Dashboard</h1>
+            <p class="lead text-muted">Manage experiments, monitor services, and deploy models</p>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card bg-success text-white h-100">
+                <div class="card-body">
+                    <h5 class="card-title">Templates</h5>
+                    <p class="card-text">Manage experiment configuration templates</p>
+                    <a href="/templates" class="btn btn-light">View Templates</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card bg-info text-white h-100">
+                <div class="card-body">
+                    <h5 class="card-title">Experiments</h5>
+                    <p class="card-text">View generated experiments and their status</p>
+                    <a href="/experiments" class="btn btn-light">View Experiments</a>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card bg-primary text-white h-100">
+                <div class="card-body">
+                    <h5 class="card-title">New Experiment</h5>
+                    <p class="card-text">Create a new ML experiment from a template</p>
+                    <a href="/experiments/create" class="btn btn-light">Create Experiment</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Services -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <h4 class="mb-3">MLOps Services</h4>
+        </div>
+        @foreach (var service in _services)
+        {
+            <div class="col-md-3 mb-3">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">@service.Name</h5>
+                        <p class="card-text small text-muted">@service.Description</p>
+                    </div>
+                    <div class="card-footer bg-transparent">
+                        <a href="@service.Url" target="_blank" class="btn btn-outline-primary btn-sm w-100">
+                            Open @service.Name
+                        </a>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+
+    <!-- MLflow Summary -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Recent Experiments</h5>
+                </div>
+                <div class="card-body">
+                    @if (_mlflowExperiments == null)
+                    {
+                        <p class="text-muted">Loading...</p>
+                    }
+                    else if (_mlflowExperiments.Count == 0)
+                    {
+                        <p class="text-muted">No experiments found</p>
+                    }
+                    else
+                    {
+                        <ul class="list-group list-group-flush">
+                            @foreach (var exp in _mlflowExperiments.Take(5))
+                            {
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    @exp.Name
+                                    <span class="badge bg-secondary">@exp.LifecycleStage</span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Registered Models</h5>
+                </div>
+                <div class="card-body">
+                    @if (_registeredModels == null)
+                    {
+                        <p class="text-muted">Loading...</p>
+                    }
+                    else if (_registeredModels.Count == 0)
+                    {
+                        <p class="text-muted">No models registered</p>
+                    }
+                    else
+                    {
+                        <ul class="list-group list-group-flush">
+                            @foreach (var model in _registeredModels.Take(5))
+                            {
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    @model.Name
+                                    @if (model.LatestVersions?.Any(v => v.Aliases?.Contains("champion") == true) == true)
+                                    {
+                                        <span class="badge bg-success">Champion</span>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<MlflowExperiment>? _mlflowExperiments;
+    private List<MlflowRegisteredModel>? _registeredModels;
+
+    private readonly List<ServiceInfo> _services = new()
+    {
+        new("Kestra", "Declarative workflows", "http://localhost:8081"),
+        new("JupyterLab", "Data science notebooks", "http://localhost:8888"),
+        new("Airflow", "Workflow orchestration", "http://localhost:8080"),
+        new("MLflow", "ML experiment tracking", "http://localhost:5000"),
+        new("Model API", "ML prediction service", "http://localhost:8000/docs"),
+        new("pgAdmin", "Database administration", "http://localhost:5050"),
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _mlflowExperiments = await MlflowClient.GetExperimentsAsync();
+        _registeredModels = await MlflowClient.GetRegisteredModelsAsync();
+    }
+
+    private record ServiceInfo(string Name, string Description, string Url);
+}
