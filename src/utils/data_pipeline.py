@@ -4,6 +4,8 @@ Builds sklearn-style pipelines from a simple spec and provides save/load helpers
 """
 import logging
 from pathlib import Path
+
+import pandas as pd
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer
 import joblib
@@ -21,6 +23,33 @@ from data_transform import (
     )
 
 logger = logging.getLogger(__name__)
+
+
+def load_dataframe(file_path: str) -> pd.DataFrame:
+    """
+    Load a DataFrame from a file, auto-detecting format based on extension.
+
+    Supports:
+        - .csv: Comma-separated values
+        - .json: JSON (records orientation by default, or auto-detect)
+
+    Args:
+        file_path: Path to the data file
+
+    Returns:
+        pandas DataFrame
+
+    Raises:
+        ValueError: If file extension is not supported
+    """
+    ext = Path(file_path).suffix.lower()
+
+    if ext == '.csv':
+        return pd.read_csv(file_path)
+    elif ext == '.json':
+        return pd.read_json(file_path)
+    else:
+        raise ValueError(f"Unsupported file format: {ext}. Supported formats: .csv, .json")
 
 
 def _get_pipeline_spec(config: Config) -> Dict[str, Any]:

@@ -377,6 +377,8 @@ services:
     image: kestra/kestra:latest
     container_name: kestra
     command: server standalone
+    user: "root"
+    privileged: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -415,7 +417,7 @@ services:
             type: postgres
           tasks:
             tmp-dir:
-              path: /app/tmp
+              path: /tmp/kestra-wd
           plugins:
             repositories:
               central:
@@ -428,7 +430,7 @@ services:
       - ./data:/app/data
       - ./flows:/app/flows
       - /var/run/docker.sock:/var/run/docker.sock
-      - kestra-tmp:/app/tmp
+      - ./infrastructure/kestra/tmp:/tmp/kestra-wd
     ports:
       - "8081:8080"
     healthcheck:
@@ -489,4 +491,3 @@ volumes:
   postgres-data:
   airflow-plugins:
   kestra-data:
-  kestra-tmp:

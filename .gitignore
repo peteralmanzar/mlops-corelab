@@ -168,6 +168,7 @@ mlflow.db
 
 # Kestra
 kestra/
+infrastructure/kestra/tmp/
 flows/**/*.yaml
 flows/**/*.yml
 

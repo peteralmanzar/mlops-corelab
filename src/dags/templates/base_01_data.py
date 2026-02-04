@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, Ti
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config
 from mlflow_log import MLFlowLogger
+from data_pipeline import load_dataframe
 
 
 def _get_experiment_assets(experiment_name: str):
@@ -44,7 +45,7 @@ def _load_raw_data(config, experiment_name: Optional[str] = None):
         raw_path = config.DATA.get("RAW_PATH_FILE")
 
         print(f"{exp_prefix}Loading data from: {raw_path}")
-        df = pd.read_csv(raw_path)
+        df = load_dataframe(raw_path)
 
         print(f"{exp_prefix}Data loaded successfully. Shape: {df.shape}")
         print(f"Columns: {df.columns.tolist()}")
@@ -69,7 +70,7 @@ def _perform_eda(config, experiment_name: Optional[str] = None):
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Performing EDA on data from: {raw_path}")
 
-        df = pd.read_csv(raw_path)
+        df = load_dataframe(raw_path)
 
         # Initialize MLflow logger
         mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
@@ -201,7 +202,7 @@ def _split_data(config, experiment_name: Optional[str] = None):
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         raw_path = config.DATA.get("RAW_PATH_FILE")
-        df = pd.read_csv(raw_path)
+        df = load_dataframe(raw_path)
 
         fold_type = config.DATA.get("FOLD_TYPE")
         test_size = config.DATA.get("TRAIN_TEST_SPLIT", 0.2)
