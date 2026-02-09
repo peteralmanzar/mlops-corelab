@@ -26,7 +26,7 @@ import json
 from airflow import DAG
 from airflow.datasets import Dataset
 from airflow.providers.standard.operators.python import PythonOperator, get_current_context
-from airflow.decorators import task
+from airflow.sdk import task
 
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import clone_model
@@ -39,6 +39,9 @@ from model_template import (
     GetModelTemplateMLPRegression,
     GetModelTemplateMLPBinaryClassification,
     GetModelTemplateMLPMultiClassification,
+    GetModelTemplateLSTM,
+    GetModelTemplateLSTMBinaryClassification,
+    GetModelTemplateLSTMMultiClassification,
     Optimizer
 )
 from model_builder import ModelBuilder
@@ -103,55 +106,86 @@ def _metadata_load(config, experiment_name: Optional[str] = None):
         import glob
 
         folds_info = []
+        data_format = 'csv'
 
         if split_type == 'simple':
-            train_path = os.path.join(features_path, "train_transformed.csv")
-            test_path = os.path.join(features_path, "test_transformed.csv")
+            # Check for .npy (sequenced) files first, then fall back to .csv
+            npy_train = os.path.join(features_path, "train_simple_X.npy")
+            npy_test = os.path.join(features_path, "test_simple_X.npy")
+            csv_train = os.path.join(features_path, "train_transformed.csv")
+            csv_test = os.path.join(features_path, "test_transformed.csv")
 
-            if not os.path.exists(train_path) or not os.path.exists(test_path):
+            if os.path.exists(npy_train) and os.path.exists(npy_test):
+                data_format = 'npy'
+                folds_info.append({
+                    'fold_id': 0,
+                    'train_path': npy_train,
+                    'test_path': npy_test,
+                    'train_y_path': os.path.join(features_path, "train_simple_y.npy"),
+                    'test_y_path': os.path.join(features_path, "test_simple_y.npy"),
+                })
+                print(f"{exp_prefix}Simple split: found sequenced .npy files")
+            elif os.path.exists(csv_train) and os.path.exists(csv_test):
+                folds_info.append({
+                    'fold_id': 0,
+                    'train_path': csv_train,
+                    'test_path': csv_test
+                })
+                print(f"{exp_prefix}Simple split: found transformed .csv files")
+            else:
                 raise FileNotFoundError(
                     f"Simple split transformed files not found in {features_path}. "
-                    f"Expected: train_transformed.csv, test_transformed.csv. "
+                    f"Expected: train_transformed.csv or train_simple_X.npy. "
                     f"Please run 02_dag_preprocess with current config."
                 )
 
-            folds_info.append({
-                'fold_id': 0,
-                'train_path': train_path,
-                'test_path': test_path
-            })
-            print(f"{exp_prefix}Simple split: found transformed files")
-
         else:
-            train_files = sorted(glob.glob(os.path.join(features_path, "train_fold_*_transformed.csv")))
-            test_files = sorted(glob.glob(os.path.join(features_path, "test_fold_*_transformed.csv")))
+            # Check for .npy files first
+            npy_files = sorted(glob.glob(os.path.join(features_path, "train_fold_*_X.npy")))
+            csv_files = sorted(glob.glob(os.path.join(features_path, "train_fold_*_transformed.csv")))
 
-            if len(train_files) == 0:
+            if len(npy_files) > 0:
+                data_format = 'npy'
+                num_folds = len(npy_files)
+                for fold_idx in range(num_folds):
+                    train_path = os.path.join(features_path, f"train_fold_{fold_idx}_X.npy")
+                    test_path = os.path.join(features_path, f"test_fold_{fold_idx}_X.npy")
+                    if not os.path.exists(train_path) or not os.path.exists(test_path):
+                        raise FileNotFoundError(
+                            f"Missing .npy files for fold {fold_idx}: {train_path}, {test_path}"
+                        )
+                    folds_info.append({
+                        'fold_id': fold_idx,
+                        'train_path': train_path,
+                        'test_path': test_path,
+                        'train_y_path': os.path.join(features_path, f"train_fold_{fold_idx}_y.npy"),
+                        'test_y_path': os.path.join(features_path, f"test_fold_{fold_idx}_y.npy"),
+                    })
+                print(f"{exp_prefix}{split_type} split: found {num_folds} sequenced .npy folds")
+
+            elif len(csv_files) > 0:
+                num_folds = len(csv_files)
+                for fold_idx in range(num_folds):
+                    train_path = os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv")
+                    test_path = os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
+                    if not os.path.exists(train_path) or not os.path.exists(test_path):
+                        raise FileNotFoundError(
+                            f"Missing transformed files for fold {fold_idx}: {train_path}, {test_path}"
+                        )
+                    folds_info.append({
+                        'fold_id': fold_idx,
+                        'train_path': train_path,
+                        'test_path': test_path
+                    })
+                print(f"{exp_prefix}{split_type} split: found {num_folds} transformed .csv folds")
+
+            else:
                 raise FileNotFoundError(
                     f"No transformed fold files found in {features_path}. "
-                    f"Expected: train_fold_*_transformed.csv files. "
+                    f"Expected: train_fold_*_transformed.csv or train_fold_*_X.npy files. "
                     f"Config shows FOLD_TYPE={fold_type}. "
                     f"Please run 02_dag_preprocess to generate transformed {fold_type} data."
                 )
-
-            num_folds = len(train_files)
-
-            for fold_idx in range(num_folds):
-                train_path = os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv")
-                test_path = os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
-
-                if not os.path.exists(train_path) or not os.path.exists(test_path):
-                    raise FileNotFoundError(
-                        f"Missing transformed files for fold {fold_idx}: {train_path}, {test_path}"
-                    )
-
-                folds_info.append({
-                    'fold_id': fold_idx,
-                    'train_path': train_path,
-                    'test_path': test_path
-                })
-
-            print(f"{exp_prefix}{split_type} split: found {num_folds} transformed folds")
 
         # Get the triggering asset events
         triggering_events = context.get('triggering_asset_events')
@@ -194,6 +228,7 @@ def _metadata_load(config, experiment_name: Optional[str] = None):
         context['ti'].xcom_push(key='split_type', value=split_type)
         context['ti'].xcom_push(key='folds_info', value=folds_info)
         context['ti'].xcom_push(key='num_folds', value=len(folds_info))
+        context['ti'].xcom_push(key='data_format', value=data_format)
 
         print(f"{exp_prefix}Loaded metadata for {len(folds_info)} fold(s)")
 
@@ -217,22 +252,47 @@ def _model_build(config, experiment_name: Optional[str] = None):
 
         first_fold = folds_info[0]
         train_path = first_fold['train_path']
+        data_format = ti.xcom_pull(task_ids='metadata_load', key='data_format') or 'csv'
 
-        print(f"{exp_prefix}Loading data from: {train_path}")
-        df = pd.read_csv(train_path)
+        print(f"{exp_prefix}Loading data from: {train_path} (format: {data_format})")
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
-        feature_cols = [col for col in df.columns if col not in label_cols]
+        sequence_length = None
 
-        X = df[feature_cols]
-        y = df[label_cols]
+        if data_format == 'npy':
+            X = np.load(train_path, mmap_mode='r')  # 3D: (sequences, seq_len, features)
+            y_path = first_fold.get('train_y_path', train_path.replace('_X.npy', '_y.npy'))
+            y_arr = np.load(y_path)
 
-        num_features = X.shape[1]
-        num_samples = X.shape[0]
+            num_features = X.shape[2]
+            sequence_length = X.shape[1]
+            num_samples = X.shape[0]
 
-        print(f"{exp_prefix}Data shape: {df.shape}")
-        print(f"{exp_prefix}Features: {num_features} columns")
-        print(f"{exp_prefix}Samples: {num_samples} rows")
+            print(f"{exp_prefix}Sequence data shape: {X.shape}")
+            print(f"{exp_prefix}Features: {num_features}, Sequence length: {sequence_length}")
+            print(f"{exp_prefix}Samples: {num_samples} sequences")
+
+            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            y = pd.DataFrame(y_arr, columns=label_cols)
+        else:
+            # Only read a small sample for task-type detection and feature counting;
+            # full data is loaded per-fold in train_fold_model.
+            df_sample = pd.read_csv(train_path, nrows=1000)
+
+            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            feature_cols = [col for col in df_sample.columns if col not in label_cols]
+
+            X = df_sample[feature_cols]
+            y = df_sample[label_cols]
+
+            num_features = X.shape[1]
+
+            # Count total rows without loading the full file
+            with open(train_path, 'r') as f:
+                num_samples = sum(1 for _ in f) - 1  # subtract header
+
+            print(f"{exp_prefix}Data columns: {df_sample.shape[1]}")
+            print(f"{exp_prefix}Features: {num_features} columns")
+            print(f"{exp_prefix}Samples: {num_samples} rows (sampled {len(df_sample)} for detection)")
 
         task_type, num_classes = _detect_task_type(y, label_cols)
         print(f"{exp_prefix}Task type detected: {task_type}, num_classes: {num_classes}")
@@ -261,6 +321,9 @@ def _model_build(config, experiment_name: Optional[str] = None):
             'validation_split': config.MODEL.get("VALIDATION_SPLIT", 0.2),
             'early_stopping_patience': config.MODEL.get("EARLY_STOPPING_PATIENCE", 10)
         }
+
+        if sequence_length is not None:
+            model_config['sequence_length'] = sequence_length
 
         model_config_serializable = {k: (v.value if hasattr(v, 'value') else v) for k, v in model_config.items()}
 
@@ -366,19 +429,34 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
         # Load training data from first fold
         first_fold = folds_info[0]
         train_path = first_fold['train_path']
+        data_format = ti.xcom_pull(task_ids='metadata_load', key='data_format') or 'csv'
 
-        print(f"{exp_prefix}Loading tuning data from: {train_path}")
-        train_df = pd.read_csv(train_path)
+        print(f"{exp_prefix}Loading tuning data from: {train_path} (format: {data_format})")
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
-        feature_cols = [col for col in train_df.columns if col not in label_cols]
+        if data_format == 'npy':
+            X = np.load(train_path, mmap_mode='r')
+            y_path = first_fold.get('train_y_path', train_path.replace('_X.npy', '_y.npy'))
+            y = np.load(y_path).reshape(-1, 1)
+        else:
+            train_df = pd.read_csv(train_path)
+            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            feature_cols = [col for col in train_df.columns if col not in label_cols]
+            X = train_df[feature_cols].values
+            y = train_df[label_cols].values
 
-        X = train_df[feature_cols].values
-        y = train_df[label_cols].values
+        # Subsample tuning data if it exceeds MAX_TUNING_SAMPLES
+        random_seed = config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42
+        max_tuning_samples = tuning_config.get('MAX_TUNING_SAMPLES')
+        if max_tuning_samples and len(X) > max_tuning_samples:
+            original_len = len(X)
+            rng = np.random.RandomState(random_seed)
+            indices = rng.choice(len(X), max_tuning_samples, replace=False)
+            X = X[indices]
+            y = y[indices]
+            print(f"{exp_prefix}Subsampled tuning data from {original_len} to {max_tuning_samples}")
 
         # Split for tuning validation
         val_split = tuning_config.get('VALIDATION_SPLIT_FOR_TUNING', 0.2)
-        random_seed = config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42
         X_train, X_val, y_train, y_val = train_test_split(
             X, y, test_size=val_split, random_state=random_seed
         )
@@ -427,6 +505,7 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
             })
 
             # Create tuner and run study
+            sequence_length = model_config.get('sequence_length')
             tuner = OptunaHyperparameterTuner(
                 config=config,
                 task_type=task_type,
@@ -434,7 +513,8 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
                 num_classes=num_classes,
                 mlflow_logger=logger,
                 invocation_id=invocation_id,
-                experiment_name=experiment_name
+                experiment_name=experiment_name,
+                sequence_length=sequence_length
             )
 
             study_name = f"{experiment_name}_hpo_study" if experiment_name else "hpo_study"
@@ -505,16 +585,24 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             print(f"{exp_prefix}Using default hyperparameters")
         print(f"{'='*60}")
 
-        train_df = pd.read_csv(train_path)
-        test_df = pd.read_csv(test_path)
+        sequence_length = model_config.get('sequence_length')
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
-        feature_cols = [col for col in train_df.columns if col not in label_cols]
+        if train_path.endswith('.npy'):
+            X_train = np.load(train_path)
+            y_train = np.load(fold_info.get('train_y_path', train_path.replace('_X.npy', '_y.npy')))
+            X_test = np.load(test_path)
+            y_test = np.load(fold_info.get('test_y_path', test_path.replace('_X.npy', '_y.npy')))
+        else:
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
 
-        X_train = train_df[feature_cols].values
-        y_train = train_df[label_cols].values
-        X_test = test_df[feature_cols].values
-        y_test = test_df[label_cols].values
+            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            feature_cols = [col for col in train_df.columns if col not in label_cols]
+
+            X_train = train_df[feature_cols].values
+            y_train = train_df[label_cols].values
+            X_test = test_df[feature_cols].values
+            y_test = test_df[label_cols].values
 
         print(f"{exp_prefix}Train shape: X={X_train.shape}, y={y_train.shape}")
         print(f"{exp_prefix}Test shape: X={X_test.shape}, y={y_test.shape}")
@@ -535,7 +623,8 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             task_type=task_type,
             num_features=num_features,
             num_classes=num_classes,
-            hyperparams=best_hyperparams
+            hyperparams=best_hyperparams,
+            sequence_length=sequence_length
         )
 
         print(f"\n{exp_prefix}Model instantiated: {task_type}")

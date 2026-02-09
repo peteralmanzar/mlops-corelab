@@ -84,6 +84,33 @@ class PipelineImputer(BaseEstimator, TransformerMixin):
                 X_out[c] = X_out[c].fillna(val)
         return X_out
 
+class PipelineNullRowDropper(BaseEstimator, TransformerMixin):
+    """
+    PipelineNullRowDropper drops rows that contain null values in the specified columns.
+
+    Parameters
+    ----------
+    columns : list or None
+        List of columns to check for nulls. If None or empty, no rows are dropped.
+    """
+
+    def __init__(self, columns: List[str] = None):
+        self.columns = columns or []
+
+    def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineNullRowDropper':
+        return self
+
+    def transform(self, X: DataFrame) -> DataFrame:
+        if X is None:
+            raise ValueError("Input X cannot be None for PipelineNullRowDropper.transform")
+        X_out = X.copy()
+        if not self.columns:
+            return X_out
+        existing = [c for c in self.columns if c in X_out.columns]
+        if not existing:
+            return X_out
+        return X_out.dropna(subset=existing).reset_index(drop=True)
+
 class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
     """
     PipelineOneHotEncoder is a custom transformer that encodes categorical columns using one-hot encoding.
@@ -365,6 +392,16 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         A column name to use as the label.
     sequence_length : int
         The length of the sequence to create.
+    sortlook : str, optional
+        A column name to group by before creating sequences. When set,
+        the data is grouped by this column and sequences are created
+        within each group independently (sequences do not cross group
+        boundaries). When None, the entire dataset is treated as one group.
+    datetime_column : str, optional
+        A column name containing datetime values used to sort the data
+        chronologically before creating sequences. When set alongside
+        ``sortlook``, data is sorted within each group. When None, the
+        existing row order is preserved.
 
     Returns
     -------
@@ -372,13 +409,23 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         A tuple containing a list of DataFrames and a DataFrame.
     """
 
-    def __init__(self, column: str = None, sequence_length: int = 60):
+    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None):
         self.column = column
         self.sequence_length = sequence_length
+        self.sortlook = sortlook
+        self.datetime_column = datetime_column
+
+    def _has_datetime_column(self, data: DataFrame) -> bool:
+        return (
+            self.datetime_column
+            and isinstance(self.datetime_column, str)
+            and self.datetime_column.strip() != ""
+            and self.datetime_column in data.columns
+        )
 
     def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSequencer':
         return self
-    
+
     def transform(self, X: DataFrame) -> DataFrame:
         if X is None:
             raise ValueError("Input X cannot be None for PipelineSequencer.transform")
@@ -392,14 +439,35 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         # For now, just return the input as-is since sequences return incompatible format
         # This transformer needs broader refactoring for sklearn compatibility
         return X.copy()
-        
+
     def create_sequences(self, data: DataFrame) -> Tuple[List[DataFrame], DataFrame]:
+        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip() and self.sortlook in data.columns:
+            sequencedX = []
+            sequencedy = []
+            for _, group_df in data.groupby(self.sortlook, sort=False):
+                if self._has_datetime_column(group_df):
+                    group_df = group_df.copy()
+                    group_df[self.datetime_column] = pd.to_datetime(group_df[self.datetime_column], errors='coerce')
+                    group_df = group_df.sort_values(by=self.datetime_column)
+                group_df = group_df.reset_index(drop=True)
+                for i in range(self.sequence_length, len(group_df)):
+                    sequence_df = group_df.iloc[i - self.sequence_length:i].copy()
+                    sequencedX.append(sequence_df)
+                    sequencedy.append(group_df.iloc[i][self.column])
+            label_df = pd.DataFrame(sequencedy, columns=['label'])
+            return sequencedX, label_df
+
+        if self._has_datetime_column(data):
+            data = data.copy()
+            data[self.datetime_column] = pd.to_datetime(data[self.datetime_column], errors='coerce')
+            data = data.sort_values(by=self.datetime_column).reset_index(drop=True)
+
         sequencedX = []
         sequencedy = []
         for i in range(self.sequence_length, len(data)):
             sequence_df = data.iloc[i-self.sequence_length:i].copy()
             sequencedX.append(sequence_df)
             sequencedy.append(data.iloc[i][self.column])
-                        
+
         label_df = pd.DataFrame(sequencedy, columns=['label'])
         return sequencedX, label_df

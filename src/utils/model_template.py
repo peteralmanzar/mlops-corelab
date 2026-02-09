@@ -169,6 +169,79 @@ def build_dynamic_mlp(
     return model
 
 
+def build_dynamic_lstm(
+    sequence_length: int,
+    num_features: int,
+    task_type: str,
+    num_classes: int = 1,
+    architecture_params: Optional[Dict[str, Any]] = None,
+    optimizer: Optimizer = Optimizer.ADAM,
+    learning_rate: float = 0.001
+) -> Model:
+    """
+    Build LSTM model with dynamic architecture from hyperparameters.
+
+    Args:
+        sequence_length: Number of time steps per sequence
+        num_features: Number of features per time step
+        task_type: 'regression', 'binary_classification', or 'multi_classification'
+        num_classes: Number of output classes
+        architecture_params: Dict with keys:
+            - num_hidden_layers: int
+            - hidden_units: List[int] - units per LSTM layer
+            - dropout_rate: float
+        optimizer: Optimizer enum
+        learning_rate: Learning rate for optimizer
+
+    Returns:
+        Compiled Keras Model
+    """
+    if architecture_params is None:
+        architecture_params = {
+            'num_hidden_layers': 3,
+            'hidden_units': [64, 64, 32],
+            'dropout_rate': 0.2,
+        }
+
+    num_layers = architecture_params.get('num_hidden_layers', 3)
+    hidden_units = architecture_params.get('hidden_units', [64] * num_layers)
+    dropout_rate = architecture_params.get('dropout_rate', 0.2)
+
+    if len(hidden_units) < num_layers:
+        hidden_units = hidden_units + [hidden_units[-1]] * (num_layers - len(hidden_units))
+
+    model = Sequential()
+
+    for i in range(num_layers):
+        return_sequences = (i < num_layers - 1)
+        if i == 0:
+            model.add(LSTM(hidden_units[i], return_sequences=return_sequences,
+                           input_shape=(sequence_length, num_features)))
+        else:
+            model.add(LSTM(hidden_units[i], return_sequences=return_sequences))
+        if dropout_rate > 0:
+            model.add(Dropout(dropout_rate))
+
+    # Output layer and compilation based on task type
+    if task_type == 'regression':
+        model.add(Dense(1))
+        loss = LossFunction.MEAN_SQUARED_ERROR.value
+        metrics = resolve_metrics([Metric.MEAN_ABSOLUTE_ERROR])
+    elif task_type == 'binary_classification':
+        model.add(Dense(1, activation=LayerActivation.SIGMOID.value))
+        loss = LossFunction.BINARY_CROSSENTROPY.value
+        metrics = resolve_metrics([Metric.ACCURACY])
+    else:  # multi_classification
+        model.add(Dense(num_classes, activation=LayerActivation.SOFTMAX.value))
+        loss = LossFunction.CATEGORICAL_CROSSENTROPY.value
+        metrics = resolve_metrics([Metric.ACCURACY])
+
+    optimizer_instance = _create_optimizer_with_lr(optimizer, learning_rate)
+    model.compile(optimizer=optimizer_instance, loss=loss, metrics=metrics)
+
+    return model
+
+
 def getModelTemplateNone() -> Optional[Model]:
     '''
     Returns a template for a None model.
@@ -233,6 +306,44 @@ def GetModelTemplateLSTM(numberOfSteps: int, numberOfFeatures: int, optimizer: O
     ])
 
     model.compile(optimizer=optimizer.value, loss=LossFunction.MEAN_SQUARED_ERROR.value, metrics=resolve_metrics([Metric.MEAN_ABSOLUTE_ERROR]))
+
+    return model
+
+def GetModelTemplateLSTMBinaryClassification(numberOfSteps: int, numberOfFeatures: int, optimizer: Optimizer = Optimizer.ADAM) -> Model:
+    '''
+    Returns a template for an LSTM model for binary classification tasks on sequential data.
+    '''
+    model = Sequential([
+        LSTM(64, return_sequences=True, input_shape=(numberOfSteps, numberOfFeatures)),
+        Dropout(0.2),
+        LSTM(64, return_sequences=True),
+        Dropout(0.2),
+        LSTM(64, return_sequences=True),
+        Dropout(0.2),
+        LSTM(32, return_sequences=False),
+        Dense(1, activation=LayerActivation.SIGMOID.value)
+    ])
+
+    model.compile(optimizer=optimizer.value, loss=LossFunction.BINARY_CROSSENTROPY.value, metrics=resolve_metrics([Metric.ACCURACY]))
+
+    return model
+
+def GetModelTemplateLSTMMultiClassification(numberOfSteps: int, numberOfFeatures: int, num_classes: int, optimizer: Optimizer = Optimizer.ADAM) -> Model:
+    '''
+    Returns a template for an LSTM model for multi-class classification tasks on sequential data.
+    '''
+    model = Sequential([
+        LSTM(64, return_sequences=True, input_shape=(numberOfSteps, numberOfFeatures)),
+        Dropout(0.2),
+        LSTM(64, return_sequences=True),
+        Dropout(0.2),
+        LSTM(64, return_sequences=True),
+        Dropout(0.2),
+        LSTM(32, return_sequences=False),
+        Dense(num_classes, activation=LayerActivation.SOFTMAX.value)
+    ])
+
+    model.compile(optimizer=optimizer.value, loss=LossFunction.CATEGORICAL_CROSSENTROPY.value, metrics=resolve_metrics([Metric.ACCURACY]))
 
     return model
 

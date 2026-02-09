@@ -14,6 +14,9 @@ from model_template import (
     GetModelTemplateMLPRegression,
     GetModelTemplateMLPBinaryClassification,
     GetModelTemplateMLPMultiClassification,
+    GetModelTemplateLSTM,
+    GetModelTemplateLSTMBinaryClassification,
+    GetModelTemplateLSTMMultiClassification,
     build_dynamic_mlp,
     Optimizer as TemplateOptimizer,
 )
@@ -72,7 +75,8 @@ class ModelBuilder:
         task_type: str,
         num_features: int,
         num_classes: int,
-        hyperparams: Optional[Dict[str, Any]] = None
+        hyperparams: Optional[Dict[str, Any]] = None,
+        sequence_length: Optional[int] = None
     ):
         """
         Instantiate a fresh Keras model based on task type and configuration.
@@ -83,12 +87,46 @@ class ModelBuilder:
             num_classes: Number of output classes
             hyperparams: Optional dict with 'architecture' and 'training' keys from Optuna tuning.
                          If provided, uses dynamic model building with tuned hyperparameters.
+            sequence_length: If set, builds an LSTM model for sequential/3D input data.
 
         Returns:
             Compiled Keras model
         """
         optimizer_str = self.config.MODEL.get("OPTIMIZER", "adam")
         optimizer = self._resolve_optimizer(optimizer_str)
+
+        # LSTM models for sequenced (3D) data
+        if sequence_length is not None:
+            # If hyperparams provided (from Optuna), build a dynamic LSTM
+            if hyperparams is not None:
+                from model_template import build_dynamic_lstm
+                arch_params = hyperparams.get('architecture', {})
+                train_params = hyperparams.get('training', {})
+                hp_optimizer_str = train_params.get('optimizer', optimizer_str)
+                hp_optimizer = self._resolve_optimizer(hp_optimizer_str)
+                learning_rate = train_params.get('learning_rate', 0.001)
+                return build_dynamic_lstm(
+                    sequence_length=sequence_length,
+                    num_features=num_features,
+                    task_type=task_type,
+                    num_classes=num_classes,
+                    architecture_params=arch_params,
+                    optimizer=hp_optimizer,
+                    learning_rate=learning_rate
+                )
+            # Fallback to hardcoded LSTM templates
+            if task_type == 'regression':
+                return GetModelTemplateLSTM(
+                    numberOfSteps=sequence_length, numberOfFeatures=num_features, optimizer=optimizer)
+            elif task_type == 'binary_classification':
+                return GetModelTemplateLSTMBinaryClassification(
+                    numberOfSteps=sequence_length, numberOfFeatures=num_features, optimizer=optimizer)
+            elif task_type == 'multi_classification':
+                return GetModelTemplateLSTMMultiClassification(
+                    numberOfSteps=sequence_length, numberOfFeatures=num_features,
+                    num_classes=num_classes, optimizer=optimizer)
+            else:
+                raise ValueError(f"Unknown task_type for LSTM model build: {task_type}")
 
         # If hyperparams provided (from Optuna), use dynamic model builder
         if hyperparams is not None:

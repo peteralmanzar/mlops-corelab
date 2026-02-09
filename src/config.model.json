@@ -32,11 +32,12 @@
       "steps": [
         {"dateSplit": {"columns": [], "dropColumns": true}},
         {"imputer": {"columns": [], "numeric_strategy": "mean", "categorical_strategy": "mode"}},
+        {"dropNullRows": {"columns": []}},
         {"scaler": {"columns": []}},
         {"onehot": {"columns": []}},
         {"drop": {"columns": []}},
         {"index": {"column": ""}},
-        {"sequencer": {"column": "", "sequence_length": 60}}
+        {"sequencer": {"column": "", "sequence_length": 60, "sortlook": "", "datetime_column": ""}}
       ]
     }
   },

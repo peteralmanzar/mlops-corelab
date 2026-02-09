@@ -26,13 +26,13 @@ import mlflow
 from airflow import DAG
 from airflow.datasets import Dataset
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.decorators import task
+from airflow.sdk import task
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config
 from mlflow_log import MLFlowLogger
-from data_pipeline import build_pipeline, save_pipeline, load_pipeline
+from data_pipeline import build_pipeline, save_pipeline, load_pipeline, extract_sequencer_step
 
 
 def _get_experiment_assets(experiment_name: str):
@@ -335,10 +335,36 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Processing fold: {fold}")
 
-        pipeline = load_pipeline(pipeline_path)
+        raw_pipeline = load_pipeline(pipeline_path)
+        pipeline, sequencer = extract_sequencer_step(raw_pipeline)
 
         train_df = pd.read_csv(train_path)
         test_df = pd.read_csv(test_path)
+
+        # Pre-drop rows with nulls so X and y stay aligned after pipeline transform.
+        # The pipeline's NullRowDropper removes rows from X during transform,
+        # but y would keep all rows, causing a row-count mismatch on concat.
+        for step_name, step_obj in pipeline.steps:
+            if hasattr(step_obj, 'columns') and 'drop_null' in step_name:
+                null_cols = [c for c in step_obj.columns if c in train_df.columns]
+                if null_cols:
+                    train_df = train_df.dropna(subset=null_cols).reset_index(drop=True)
+                null_cols = [c for c in step_obj.columns if c in test_df.columns]
+                if null_cols:
+                    test_df = test_df.dropna(subset=null_cols).reset_index(drop=True)
+
+        # Preserve sequencer helper columns (sortlook, datetime) before transform
+        # because pipeline steps like OneHotEncoder and DateSpliter destroy them.
+        seq_helper_cols = {}
+        if sequencer is not None:
+            for attr in ('sortlook', 'datetime_column'):
+                col = getattr(sequencer, attr, None)
+                if col and isinstance(col, str) and col.strip():
+                    if col in train_df.columns and col not in label_cols:
+                        seq_helper_cols[col] = {
+                            'train': train_df[col].reset_index(drop=True),
+                            'test': test_df[col].reset_index(drop=True) if col in test_df.columns else None,
+                        }
 
         X_train = train_df[[col for col in train_df.columns if col not in label_cols]]
         y_train = train_df[label_cols] if label_cols else None
@@ -354,17 +380,50 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
             X_test_transformed = pd.DataFrame(X_test_transformed)
 
         if y_train is not None:
-            train_transformed = pd.concat([X_train_transformed, y_train.reset_index(drop=True)], axis=1)
+            train_transformed = pd.concat([X_train_transformed.reset_index(drop=True), y_train.reset_index(drop=True)], axis=1)
         else:
             train_transformed = X_train_transformed
 
         if y_test is not None:
-            test_transformed = pd.concat([X_test_transformed, y_test.reset_index(drop=True)], axis=1)
+            test_transformed = pd.concat([X_test_transformed.reset_index(drop=True), y_test.reset_index(drop=True)], axis=1)
         else:
             test_transformed = X_test_transformed
 
+        # Re-attach sequencer helper columns so sequence_to_disk can group/sort
+        for col, saved in seq_helper_cols.items():
+            if col not in train_transformed.columns:
+                train_transformed[col] = saved['train'].values
+            if saved['test'] is not None and col not in test_transformed.columns:
+                test_transformed[col] = saved['test'].values
+
         os.makedirs(features_path, exist_ok=True)
 
+        # If sequencer is configured, stream sequences to disk as .npy
+        if sequencer is not None:
+            label_col = label_cols[0]
+            prefix = f"fold_{fold}" if fold != 'simple' else "simple"
+
+            train_meta = sequencer.sequence_to_disk(
+                train_transformed, label_col, features_path, f"train_{prefix}")
+            test_meta = sequencer.sequence_to_disk(
+                test_transformed, label_col, features_path, f"test_{prefix}")
+
+            print(f"{exp_prefix}  Saved sequences: {train_meta['X_path']} (shape: {train_meta['shape']})")
+            print(f"{exp_prefix}  Saved sequences: {test_meta['X_path']} (shape: {test_meta['shape']})")
+
+            return {
+                'fold': fold,
+                'train_output': train_meta['X_path'],
+                'test_output': test_meta['X_path'],
+                'train_y_path': train_meta['y_path'],
+                'test_y_path': test_meta['y_path'],
+                'train_shape': train_meta['shape'],
+                'test_shape': test_meta['shape'],
+                'data_format': 'npy',
+                'sequence_length': sequencer.sequence_length
+            }
+
+        # No sequencer: save as CSV (original behavior)
         if fold == 'simple':
             train_output = os.path.join(features_path, "train_transformed.csv")
             test_output = os.path.join(features_path, "test_transformed.csv")
@@ -383,7 +442,8 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
             'train_output': train_output,
             'test_output': test_output,
             'train_shape': train_transformed.shape,
-            'test_shape': test_transformed.shape
+            'test_shape': test_transformed.shape,
+            'data_format': 'csv'
         }
 
     return split_transform
@@ -438,26 +498,33 @@ def _validate_transformed_data(config, experiment_name: Optional[str] = None):
 
         files_to_validate = []
 
+        # Determine whether sequencer produced .npy files or pipeline produced .csv
+        def _resolve_path(base_name):
+            """Return (path, format) trying .npy first, then .csv."""
+            npy_path = os.path.join(features_path, f"{base_name}_X.npy")
+            csv_path = os.path.join(features_path, f"{base_name}_transformed.csv")
+            if os.path.exists(npy_path):
+                y_path = os.path.join(features_path, f"{base_name}_y.npy")
+                return npy_path, y_path, 'npy'
+            return csv_path, None, 'csv'
+
         if metadata['split_type'] == 'simple':
-            files_to_validate.append({
-                'name': 'train',
-                'path': os.path.join(features_path, "train_transformed.csv")
-            })
-            files_to_validate.append({
-                'name': 'test',
-                'path': os.path.join(features_path, "test_transformed.csv")
-            })
+            for role in ['train', 'test']:
+                path, y_path, fmt = _resolve_path(f"{role}_simple")
+                if fmt == 'csv':
+                    path, y_path, fmt = _resolve_path(role)
+                files_to_validate.append({
+                    'name': role, 'path': path, 'y_path': y_path, 'format': fmt
+                })
         else:
             num_folds = metadata.get('num_folds', 5)
             for fold_idx in range(num_folds):
-                files_to_validate.append({
-                    'name': f'train_fold_{fold_idx}',
-                    'path': os.path.join(features_path, f"train_fold_{fold_idx}_transformed.csv")
-                })
-                files_to_validate.append({
-                    'name': f'test_fold_{fold_idx}',
-                    'path': os.path.join(features_path, f"test_fold_{fold_idx}_transformed.csv")
-                })
+                for role in ['train', 'test']:
+                    base = f"{role}_fold_{fold_idx}"
+                    path, y_path, fmt = _resolve_path(base)
+                    files_to_validate.append({
+                        'name': base, 'path': path, 'y_path': y_path, 'format': fmt
+                    })
 
         mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
         mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
@@ -505,39 +572,72 @@ def _validate_transformed_data(config, experiment_name: Optional[str] = None):
                     validation_passed = False
                     continue
 
-                print(f"{exp_prefix}Validating: {file_name}")
-                df = pd.read_csv(file_path)
+                file_format = file_info.get('format', 'csv')
+                print(f"{exp_prefix}Validating: {file_name} (format: {file_format})")
 
-                feature_cols = [col for col in df.columns if col not in label_cols]
+                if file_format == 'npy':
+                    arr = np.load(file_path, mmap_mode='r')
+                    null_count = int(np.isnan(arr).sum())
+                    num_rows = arr.shape[0]
+                    num_features = arr.shape[-1]
 
-                null_count = df.isnull().sum().sum()
-                if null_count > 0:
-                    null_details = df.isnull().sum()[df.isnull().sum() > 0].to_dict()
-                    error_msg = f"{file_name}: Found {null_count} null values in columns: {null_details}"
-                    validation_errors.append(error_msg)
-                    print(f"{exp_prefix}  ❌ NULL CHECK FAILED: {null_count} null values found")
-                    validation_passed = False
-                    total_null_count += null_count
+                    if null_count > 0:
+                        error_msg = f"{file_name}: Found {null_count} NaN values in array"
+                        validation_errors.append(error_msg)
+                        print(f"{exp_prefix}  FAIL NULL CHECK: {null_count} NaN values found")
+                        validation_passed = False
+                        total_null_count += null_count
+                    else:
+                        print(f"{exp_prefix}  PASS NULL CHECK: Zero NaN values")
+
+                    print(f"{exp_prefix}  PASS NUMERIC CHECK: numpy array (dtype={arr.dtype})")
+                    print(f"{exp_prefix}  Shape: {arr.shape}")
+
+                    # Validate labels file exists
+                    y_path = file_info.get('y_path')
+                    if y_path and not os.path.exists(y_path):
+                        error_msg = f"{file_name}: Labels file not found: {y_path}"
+                        validation_errors.append(error_msg)
+                        validation_passed = False
+
+                    logger.log_metrics({
+                        f"{file_name}_null_count": null_count,
+                        f"{file_name}_non_numeric_count": 0,
+                        f"{file_name}_total_rows": num_rows,
+                        f"{file_name}_total_features": num_features
+                    })
                 else:
-                    print(f"{exp_prefix}  ✓ NULL CHECK PASSED: Zero null values")
+                    df = pd.read_csv(file_path)
+                    feature_cols = [col for col in df.columns if col not in label_cols]
 
-                non_numeric_features = df[feature_cols].select_dtypes(exclude=['int64', 'float64', 'int32', 'float32']).columns.tolist()
-                if len(non_numeric_features) > 0:
-                    non_numeric_dtypes = {col: str(df[col].dtype) for col in non_numeric_features}
-                    error_msg = f"{file_name}: Found {len(non_numeric_features)} non-numeric feature columns: {non_numeric_dtypes}"
-                    validation_errors.append(error_msg)
-                    print(f"{exp_prefix}  ❌ NUMERIC CHECK FAILED: {len(non_numeric_features)} non-numeric features")
-                    validation_passed = False
-                    total_non_numeric_features += len(non_numeric_features)
-                else:
-                    print(f"{exp_prefix}  ✓ NUMERIC CHECK PASSED: All {len(feature_cols)} features are numeric")
+                    null_count = df.isnull().sum().sum()
+                    if null_count > 0:
+                        null_details = df.isnull().sum()[df.isnull().sum() > 0].to_dict()
+                        error_msg = f"{file_name}: Found {null_count} null values in columns: {null_details}"
+                        validation_errors.append(error_msg)
+                        print(f"{exp_prefix}  FAIL NULL CHECK: {null_count} null values found")
+                        validation_passed = False
+                        total_null_count += null_count
+                    else:
+                        print(f"{exp_prefix}  PASS NULL CHECK: Zero null values")
 
-                logger.log_metrics({
-                    f"{file_name}_null_count": int(null_count),
-                    f"{file_name}_non_numeric_count": len(non_numeric_features),
-                    f"{file_name}_total_rows": len(df),
-                    f"{file_name}_total_features": len(feature_cols)
-                })
+                    non_numeric_features = df[feature_cols].select_dtypes(exclude=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+                    if len(non_numeric_features) > 0:
+                        non_numeric_dtypes = {col: str(df[col].dtype) for col in non_numeric_features}
+                        error_msg = f"{file_name}: Found {len(non_numeric_features)} non-numeric feature columns: {non_numeric_dtypes}"
+                        validation_errors.append(error_msg)
+                        print(f"{exp_prefix}  FAIL NUMERIC CHECK: {len(non_numeric_features)} non-numeric features")
+                        validation_passed = False
+                        total_non_numeric_features += len(non_numeric_features)
+                    else:
+                        print(f"{exp_prefix}  PASS NUMERIC CHECK: All {len(feature_cols)} features are numeric")
+
+                    logger.log_metrics({
+                        f"{file_name}_null_count": int(null_count),
+                        f"{file_name}_non_numeric_count": len(non_numeric_features),
+                        f"{file_name}_total_rows": len(df),
+                        f"{file_name}_total_features": len(feature_cols)
+                    })
 
                 files_validated += 1
 

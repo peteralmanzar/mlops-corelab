@@ -12,7 +12,7 @@ import numpy as np
 from typing import Dict, Any, Optional, Tuple, Callable, List
 
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.layers import Dense, Dropout, LSTM
 from tensorflow.keras.optimizers import Adam, SGD, RMSprop, Adamax, Nadam
 from tensorflow.keras.callbacks import EarlyStopping
 
@@ -39,7 +39,8 @@ class OptunaHyperparameterTuner:
         num_classes: int,
         mlflow_logger: Optional[Any] = None,
         invocation_id: Optional[str] = None,
-        experiment_name: Optional[str] = None
+        experiment_name: Optional[str] = None,
+        sequence_length: Optional[int] = None
     ):
         self.config = config
         self.task_type = task_type
@@ -48,6 +49,7 @@ class OptunaHyperparameterTuner:
         self.mlflow_logger = mlflow_logger
         self.invocation_id = invocation_id
         self.experiment_name = experiment_name
+        self.sequence_length = sequence_length
 
         # Extract tuning config
         self.tuning_config = getattr(config, 'HYPERPARAMETER_TUNING', {})
@@ -72,23 +74,34 @@ class OptunaHyperparameterTuner:
         dropout_rate = params.get('dropout_rate', 0.0)
         activation = params.get('activation', 'relu')
 
-        # Input + first hidden layer
-        model.add(Dense(
-            params['hidden_units_0'],
-            activation=activation,
-            input_shape=(self.num_features,)
-        ))
-
-        if dropout_rate > 0:
-            model.add(Dropout(dropout_rate))
-
-        # Additional hidden layers
-        for i in range(1, num_layers):
-            units_key = f'hidden_units_{i}'
-            units = params.get(units_key, params['hidden_units_0'])
-            model.add(Dense(units, activation=activation))
+        if self.sequence_length is not None:
+            # LSTM model for 3D sequence data (samples, seq_len, features)
+            for i in range(num_layers):
+                units_key = f'hidden_units_{i}'
+                units = params.get(units_key, params['hidden_units_0'])
+                return_sequences = (i < num_layers - 1)
+                if i == 0:
+                    model.add(LSTM(units, return_sequences=return_sequences,
+                                   input_shape=(self.sequence_length, self.num_features)))
+                else:
+                    model.add(LSTM(units, return_sequences=return_sequences))
+                if dropout_rate > 0:
+                    model.add(Dropout(dropout_rate))
+        else:
+            # MLP model for 2D tabular data
+            model.add(Dense(
+                params['hidden_units_0'],
+                activation=activation,
+                input_shape=(self.num_features,)
+            ))
             if dropout_rate > 0:
                 model.add(Dropout(dropout_rate))
+            for i in range(1, num_layers):
+                units_key = f'hidden_units_{i}'
+                units = params.get(units_key, params['hidden_units_0'])
+                model.add(Dense(units, activation=activation))
+                if dropout_rate > 0:
+                    model.add(Dropout(dropout_rate))
 
         # Output layer based on task type
         if self.task_type == 'regression':

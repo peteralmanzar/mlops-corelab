@@ -1,3 +1,6 @@
+import os
+import logging
+
 import pandas as pd
 import numpy as np
 from pandas import DataFrame
@@ -5,6 +8,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder as SklearnOneHotEncoder, StandardScaler
 from typing import List, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 class PipelineImputer(BaseEstimator, TransformerMixin):
     """
@@ -84,6 +89,33 @@ class PipelineImputer(BaseEstimator, TransformerMixin):
                 X_out[c] = X_out[c].fillna(val)
         return X_out
 
+class PipelineNullRowDropper(BaseEstimator, TransformerMixin):
+    """
+    PipelineNullRowDropper drops rows that contain null values in the specified columns.
+
+    Parameters
+    ----------
+    columns : list or None
+        List of columns to check for nulls. If None or empty, no rows are dropped.
+    """
+
+    def __init__(self, columns: List[str] = None):
+        self.columns = columns or []
+
+    def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineNullRowDropper':
+        return self
+
+    def transform(self, X: DataFrame) -> DataFrame:
+        if X is None:
+            raise ValueError("Input X cannot be None for PipelineNullRowDropper.transform")
+        X_out = X.copy()
+        if not self.columns:
+            return X_out
+        existing = [c for c in self.columns if c in X_out.columns]
+        if not existing:
+            return X_out
+        return X_out.dropna(subset=existing).reset_index(drop=True)
+
 class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
     """
     PipelineOneHotEncoder is a custom transformer that encodes categorical columns using one-hot encoding.
@@ -106,10 +138,10 @@ class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
         if self.columns:
             # scikit-learn >=1.2 renamed `sparse` -> `sparse_output`; try the new name
             try:
-                self.encoder = SklearnOneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
+                self.encoder = SklearnOneHotEncoder(sparse_output=True, drop='first', handle_unknown='ignore')
             except TypeError:
                 # fallback for older scikit-learn versions that expect `sparse`
-                self.encoder = SklearnOneHotEncoder(sparse=False, drop='first', handle_unknown='ignore')
+                self.encoder = SklearnOneHotEncoder(sparse=True, drop='first', handle_unknown='ignore')
         else:
             self.encoder = None
 
@@ -134,7 +166,8 @@ class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
         if not existing:
             return X_out
         encoded = self.encoder.transform(X_out[existing])
-        encoded_df = DataFrame(encoded, columns=self.encoder.get_feature_names_out(existing), index=X_out.index)
+        feature_names = self.encoder.get_feature_names_out(existing)
+        encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded, columns=feature_names, index=X_out.index)
         X_out = X_out.drop(existing, axis=1, errors="ignore")
         return pd.concat([X_out, encoded_df], axis=1)
 
@@ -365,6 +398,16 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         A column name to use as the label.
     sequence_length : int
         The length of the sequence to create.
+    sortlook : str, optional
+        A column name to group by before creating sequences. When set,
+        the data is grouped by this column and sequences are created
+        within each group independently (sequences do not cross group
+        boundaries). When None, the entire dataset is treated as one group.
+    datetime_column : str, optional
+        A column name containing datetime values used to sort the data
+        chronologically before creating sequences. When set alongside
+        ``sortlook``, data is sorted within each group. When None, the
+        existing row order is preserved.
 
     Returns
     -------
@@ -372,34 +415,165 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         A tuple containing a list of DataFrames and a DataFrame.
     """
 
-    def __init__(self, column: str = None, sequence_length: int = 60):
+    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None):
         self.column = column
         self.sequence_length = sequence_length
+        self.sortlook = sortlook
+        self.datetime_column = datetime_column
+
+    def _has_datetime_column(self, data: DataFrame) -> bool:
+        return (
+            self.datetime_column
+            and isinstance(self.datetime_column, str)
+            and self.datetime_column.strip() != ""
+            and self.datetime_column in data.columns
+        )
 
     def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSequencer':
         return self
-    
+
     def transform(self, X: DataFrame) -> DataFrame:
         if X is None:
             raise ValueError("Input X cannot be None for PipelineSequencer.transform")
-        # No-op if column not specified or not in dataframe
-        if not self.column or not isinstance(self.column, str) or self.column.strip() == "":
-            return X.copy()
-        if self.column not in X.columns:
-            return X.copy()
-        # Only create sequences if properly configured
-        sequences, labels = self.create_sequences(X)
-        # For now, just return the input as-is since sequences return incompatible format
-        # This transformer needs broader refactoring for sklearn compatibility
         return X.copy()
-        
+
+    def sequence_to_disk(self, data: DataFrame, label_column: str,
+                         output_dir: str, prefix: str,
+                         batch_size: int = 5000) -> dict:
+        """Stream sequences to disk without holding all in memory.
+
+        Uses numpy memmap to write sequences directly to disk in chunks,
+        keeping memory bounded regardless of dataset size.
+
+        Args:
+            data: DataFrame with features + label column.
+            label_column: Column name to use as prediction target.
+            output_dir: Directory to write .npy files.
+            prefix: File prefix (e.g., "train_fold_0").
+            batch_size: Number of sequences to process per chunk.
+
+        Returns:
+            dict with X_path, y_path, shape, format, and sequence_length.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Exclude label, sortlook, and datetime helper columns from features
+        exclude_cols = {label_column}
+        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip():
+            exclude_cols.add(self.sortlook)
+        if self.datetime_column and isinstance(self.datetime_column, str) and self.datetime_column.strip():
+            exclude_cols.add(self.datetime_column)
+        feature_cols = [c for c in data.columns if c not in exclude_cols]
+        num_features = len(feature_cols)
+        seq_len = self.sequence_length
+
+        # Build groups
+        if (self.sortlook and isinstance(self.sortlook, str)
+                and self.sortlook.strip() and self.sortlook in data.columns):
+            groups = list(data.groupby(self.sortlook, sort=False))
+        else:
+            groups = [(None, data)]
+
+        # First pass: count total sequences and prepare sorted groups
+        prepared_groups = []
+        total_sequences = 0
+        for key, group_df in groups:
+            if self._has_datetime_column(group_df):
+                group_df = group_df.copy()
+                group_df[self.datetime_column] = pd.to_datetime(
+                    group_df[self.datetime_column], errors='coerce')
+                group_df = group_df.sort_values(by=self.datetime_column)
+            group_df = group_df.reset_index(drop=True)
+            n_seq = max(0, len(group_df) - seq_len)
+            if n_seq > 0:
+                prepared_groups.append((key, group_df, n_seq))
+                total_sequences += n_seq
+
+        if total_sequences == 0:
+            raise ValueError(
+                f"No sequences can be created: all groups have fewer than "
+                f"{seq_len} rows (sequence_length)."
+            )
+
+        X_path = os.path.join(output_dir, f"{prefix}_X.npy")
+        y_path = os.path.join(output_dir, f"{prefix}_y.npy")
+
+        estimated_mb = (total_sequences * seq_len * num_features * 4) / (1024 * 1024)
+        logger.info(
+            "Creating memmap %s — shape: (%d, %d, %d), estimated size: %.1f MB",
+            X_path, total_sequences, seq_len, num_features, estimated_mb
+        )
+
+        # Pre-allocate memmap for X sequences (open_memmap writes a .npy
+        # header so np.load / np.load(mmap_mode=...) can read the file back).
+        X_mmap = np.lib.format.open_memmap(
+            X_path, dtype='float32', mode='w+',
+            shape=(total_sequences, seq_len, num_features)
+        )
+        y_arr = np.empty(total_sequences, dtype='float32')
+
+        global_idx = 0
+        for key, group_df, n_seq in prepared_groups:
+            group_features = group_df[feature_cols].values.astype(np.float32)
+            group_labels = group_df[label_column].values.astype(np.float32)
+
+            for chunk_start in range(0, n_seq, batch_size):
+                chunk_end = min(chunk_start + batch_size, n_seq)
+                # Vectorized: build index array for all windows in this chunk
+                offsets = np.arange(chunk_start, chunk_end)
+                row_indices = offsets[:, None] + np.arange(seq_len)
+                X_mmap[global_idx:global_idx + len(offsets)] = group_features[row_indices]
+                y_arr[global_idx:global_idx + len(offsets)] = group_labels[offsets + seq_len]
+                global_idx += len(offsets)
+
+            logger.info("Sequenced group %s: %d sequences", key, n_seq)
+
+        X_mmap.flush()
+        del X_mmap
+        np.save(y_path, y_arr)
+
+        shape = (total_sequences, seq_len, num_features)
+        logger.info(
+            "Saved sequences to %s — X shape: %s, y shape: (%d,)",
+            output_dir, shape, total_sequences
+        )
+
+        return {
+            'X_path': X_path,
+            'y_path': y_path,
+            'shape': shape,
+            'format': 'npy',
+            'sequence_length': seq_len,
+        }
+
     def create_sequences(self, data: DataFrame) -> Tuple[List[DataFrame], DataFrame]:
+        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip() and self.sortlook in data.columns:
+            sequencedX = []
+            sequencedy = []
+            for _, group_df in data.groupby(self.sortlook, sort=False):
+                if self._has_datetime_column(group_df):
+                    group_df = group_df.copy()
+                    group_df[self.datetime_column] = pd.to_datetime(group_df[self.datetime_column], errors='coerce')
+                    group_df = group_df.sort_values(by=self.datetime_column)
+                group_df = group_df.reset_index(drop=True)
+                for i in range(self.sequence_length, len(group_df)):
+                    sequence_df = group_df.iloc[i - self.sequence_length:i].copy()
+                    sequencedX.append(sequence_df)
+                    sequencedy.append(group_df.iloc[i][self.column])
+            label_df = pd.DataFrame(sequencedy, columns=['label'])
+            return sequencedX, label_df
+
+        if self._has_datetime_column(data):
+            data = data.copy()
+            data[self.datetime_column] = pd.to_datetime(data[self.datetime_column], errors='coerce')
+            data = data.sort_values(by=self.datetime_column).reset_index(drop=True)
+
         sequencedX = []
         sequencedy = []
         for i in range(self.sequence_length, len(data)):
             sequence_df = data.iloc[i-self.sequence_length:i].copy()
             sequencedX.append(sequence_df)
             sequencedy.append(data.iloc[i][self.column])
-                        
+
         label_df = pd.DataFrame(sequencedy, columns=['label'])
         return sequencedX, label_df

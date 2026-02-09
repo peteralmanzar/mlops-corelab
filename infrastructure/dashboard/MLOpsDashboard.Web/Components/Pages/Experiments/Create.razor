@@ -227,6 +227,28 @@
                         </div>
                     </div>
 
+                    <!-- Drop Null Rows -->
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button @(OpenAccordion == "dropnullrows" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("dropnullrows"))">
+                                <strong>Drop Null Rows</strong>&nbsp;- Remove rows with nulls
+                                @if (DropNullRows.Columns.Count > 0)
+                                {
+                                    <span class="badge bg-success ms-2">@DropNullRows.Columns.Count columns</span>
+                                }
+                            </button>
+                        </h2>
+                        <div class="accordion-collapse @(OpenAccordion == "dropnullrows" ? "show" : "collapse")">
+                            <div class="accordion-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Columns (comma-separated)</label>
+                                    <input type="text" class="form-control" @bind="DropNullRowsColumnsText" placeholder="e.g., TargetReturn10, TargetClose10" />
+                                    <div class="form-text">Rows with null values in any of these columns will be removed</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Drop -->
                     <div class="accordion-item">
                         <h2 class="accordion-header">
@@ -304,7 +326,17 @@
                                 <strong>Sequencer</strong>&nbsp;- Create sequences for time series
                                 @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
                                 {
-                                    <span class="badge bg-success ms-2">@Sequencer.Column (len: @Sequencer.SequenceLength)</span>
+                                    <span class="badge bg-success ms-2">
+                                        @Sequencer.Column (len: @Sequencer.SequenceLength)
+                                        @if (!string.IsNullOrWhiteSpace(Sequencer.Sortlook))
+                                        {
+                                            <text> grouped by @Sequencer.Sortlook</text>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(Sequencer.DatetimeColumn))
+                                        {
+                                            <text> sorted by @Sequencer.DatetimeColumn</text>
+                                        }
+                                    </span>
                                 }
                             </button>
                         </h2>
@@ -318,6 +350,18 @@
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Sequence Length</label>
                                         <input type="number" class="form-control" @bind="Sequencer.SequenceLength" min="1" max="500" />
+                                    </div>
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">Group By Column (sortlook)</label>
+                                        <input type="text" class="form-control" @bind="Sequencer.Sortlook" placeholder="e.g., symbol" />
+                                        <div class="form-text">Optional. Group data by this column before creating sequences.</div>
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label class="form-label">DateTime Column</label>
+                                        <input type="text" class="form-control" @bind="Sequencer.DatetimeColumn" placeholder="e.g., date" />
+                                        <div class="form-text">Optional. Sort data chronologically by this column before creating sequences.</div>
                                     </div>
                                 </div>
                                 <div class="form-text">Creates sliding window sequences for LSTM/RNN models</div>
@@ -556,6 +600,10 @@
                             {
                                 <li class="list-group-item py-1">OneHot: @string.Join(", ", OneHot.Columns)</li>
                             }
+                            @if (DropNullRows.Columns.Count > 0)
+                            {
+                                <li class="list-group-item py-1">Drop Null Rows: @string.Join(", ", DropNullRows.Columns)</li>
+                            }
                             @if (Drop.Columns.Count > 0)
                             {
                                 <li class="list-group-item py-1">Drop: @string.Join(", ", Drop.Columns)</li>
@@ -570,7 +618,13 @@
                             }
                             @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
                             {
-                                <li class="list-group-item py-1">Sequencer: @Sequencer.Column (len: @Sequencer.SequenceLength)</li>
+                                <li class="list-group-item py-1">
+                                    Sequencer: @Sequencer.Column (len: @Sequencer.SequenceLength)
+                                    @if (!string.IsNullOrWhiteSpace(Sequencer.Sortlook))
+                                    {
+                                        <text> grouped by @Sequencer.Sortlook</text>
+                                    }
+                                </li>
                             }
                         </ul>
                     </div>
@@ -663,6 +717,7 @@
     private ImputerStep Imputer { get; set; } = new();
     private ScalerStep Scaler { get; set; } = new();
     private OneHotStep OneHot { get; set; } = new();
+    private DropNullRowsStep DropNullRows { get; set; } = new();
     private DropStep Drop { get; set; } = new();
     private DateSplitStep DateSplit { get; set; } = new();
     private IndexStep Index { get; set; } = new();
@@ -693,6 +748,12 @@
     {
         get => string.Join(", ", OneHot.Columns);
         set => OneHot.Columns = ParseColumns(value);
+    }
+
+    private string DropNullRowsColumnsText
+    {
+        get => string.Join(", ", DropNullRows.Columns);
+        set => DropNullRows.Columns = ParseColumns(value);
     }
 
     private string DropColumnsText
@@ -883,6 +944,7 @@
 
         // Add steps in order (only non-empty ones will be serialized)
         steps.Add(Imputer);
+        steps.Add(DropNullRows);
         steps.Add(Scaler);
         steps.Add(OneHot);
         steps.Add(Drop);
@@ -1107,6 +1169,7 @@
     {
         // Reset all pipeline step objects
         Imputer = new ImputerStep();
+        DropNullRows = new DropNullRowsStep();
         Scaler = new ScalerStep();
         OneHot = new OneHotStep();
         Drop = new DropStep();
@@ -1129,6 +1192,9 @@
                         break;
                     case OneHotStep oneHot:
                         OneHot = oneHot;
+                        break;
+                    case DropNullRowsStep dropNullRows:
+                        DropNullRows = dropNullRows;
                         break;
                     case DropStep drop:
                         Drop = drop;

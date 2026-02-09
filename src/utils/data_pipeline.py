@@ -20,6 +20,7 @@ from data_transform import (
         PipelineIndexSetter,
         PipelineSequencer,
         PipelineImputer,
+        PipelineNullRowDropper,
     )
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,7 @@ def build_pipeline(config: Optional[Config] = None) -> Pipeline:
     
     Spec format example:
       {"steps": [ {"drop": {"columns": [...] }}, {"onehot": {...}}, {"scaler": {...}} ] }
-    Supported step keys: drop, onehot, scaler, dateSplit, index, imputer, sequencer
+    Supported step keys: drop, dropNullRows, onehot, scaler, dateSplit, index, imputer, sequencer
     """
     # Load config if not provided
     if config is None:
@@ -152,6 +153,13 @@ def build_pipeline(config: Optional[Config] = None) -> Pipeline:
             cat_strategy = cfg.get("categorical_strategy", "mode")
             fill_value = cfg.get("fill_value", None)
             steps.append((f"imputer_{i}", PipelineImputer(columns=cols, numeric_strategy=num_strategy, categorical_strategy=cat_strategy, fill_value=fill_value)))
+        elif key in ("dropNullRows", "drop_null_rows"):
+            cols = cfg.get("columns", [])
+            # Filter out empty strings and check if any valid columns remain
+            cols = [c for c in cols if isinstance(c, str) and c.strip()]
+            if not isinstance(cols, (list, tuple)) or len(cols) == 0:
+                continue
+            steps.append((f"drop_null_rows_{i}", PipelineNullRowDropper(columns=cols)))
         elif key == "onehot":
             cols = cfg.get("columns", [])
             # Filter out empty strings and check if any valid columns remain
@@ -174,11 +182,17 @@ def build_pipeline(config: Optional[Config] = None) -> Pipeline:
         elif key in ("sequencer", "sequence"):
             column = cfg.get("column") or cfg.get("label")
             seq_len = cfg.get("sequence_length", cfg.get("sequenceLength", 60))
+            sortlook = cfg.get("sortlook") or cfg.get("symbol_column")
+            datetime_column = cfg.get("datetime_column") or cfg.get("datetimeColumn")
             if not isinstance(column, str) or column.strip() == "":
                 continue
             if not isinstance(seq_len, int) or seq_len <= 0:
                 continue
-            steps.append((f"sequencer_{i}", PipelineSequencer(column=column, sequence_length=seq_len)))
+            if sortlook is not None and (not isinstance(sortlook, str) or not sortlook.strip()):
+                sortlook = None
+            if datetime_column is not None and (not isinstance(datetime_column, str) or not datetime_column.strip()):
+                datetime_column = None
+            steps.append((f"sequencer_{i}", PipelineSequencer(column=column, sequence_length=seq_len, sortlook=sortlook, datetime_column=datetime_column)))
         else:
             # unknown step key - ignore
             continue
@@ -196,3 +210,23 @@ def save_pipeline(pipeline: Pipeline, path: str) -> None:
 
 def load_pipeline(path: str) -> Pipeline:
     return joblib.load(path)
+
+
+def extract_sequencer_step(pipeline: Pipeline):
+    """Remove and return any PipelineSequencer from a pipeline.
+
+    Returns:
+        (modified_pipeline, sequencer_or_None)
+    """
+    remaining = []
+    sequencer = None
+    for name, step in pipeline.steps:
+        if isinstance(step, PipelineSequencer):
+            sequencer = step
+        else:
+            remaining.append((name, step))
+
+    if not remaining:
+        remaining = [("identity", FunctionTransformer(lambda X: X, validate=False))]
+
+    return Pipeline(remaining), sequencer

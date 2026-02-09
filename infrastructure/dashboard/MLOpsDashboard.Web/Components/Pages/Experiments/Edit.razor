@@ -136,6 +136,11 @@
                                 <input type="text" class="form-control" @bind="OneHotColumnsText" placeholder="comma-separated" />
                             </div>
                             <div class="mb-3">
+                                <label class="form-label">Drop Null Rows Columns</label>
+                                <input type="text" class="form-control" @bind="DropNullRowsColumnsText" placeholder="comma-separated" />
+                                <div class="form-text">Rows with nulls in these columns will be removed</div>
+                            </div>
+                            <div class="mb-3">
                                 <label class="form-label">Drop Columns</label>
                                 <input type="text" class="form-control" @bind="DropColumnsText" placeholder="comma-separated" />
                             </div>
@@ -155,6 +160,14 @@
                                 <div class="col">
                                     <label class="form-label">Sequence Length</label>
                                     <input type="number" class="form-control" @bind="Sequencer.SequenceLength" />
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">Group By (sortlook)</label>
+                                    <input type="text" class="form-control" @bind="Sequencer.Sortlook" placeholder="e.g., symbol" />
+                                </div>
+                                <div class="col">
+                                    <label class="form-label">DateTime Column</label>
+                                    <input type="text" class="form-control" @bind="Sequencer.DatetimeColumn" placeholder="e.g., date" />
                                 </div>
                             </div>
                         }
@@ -430,6 +443,7 @@
     private ImputerStep Imputer { get; set; } = new();
     private ScalerStep Scaler { get; set; } = new();
     private OneHotStep OneHot { get; set; } = new();
+    private DropNullRowsStep DropNullRows { get; set; } = new();
     private DropStep Drop { get; set; } = new();
     private DateSplitStep DateSplit { get; set; } = new();
     private IndexStep Index { get; set; } = new();
@@ -452,6 +466,12 @@
     {
         get => string.Join(", ", OneHot.Columns);
         set => OneHot.Columns = ParseColumns(value);
+    }
+
+    private string DropNullRowsColumnsText
+    {
+        get => string.Join(", ", DropNullRows.Columns);
+        set => DropNullRows.Columns = ParseColumns(value);
     }
 
     private string DropColumnsText
@@ -594,6 +614,9 @@
                 case OneHotStep onehot:
                     OneHot = onehot;
                     break;
+                case DropNullRowsStep dropNullRows:
+                    DropNullRows = dropNullRows;
+                    break;
                 case DropStep drop:
                     Drop = drop;
                     break;
@@ -614,7 +637,7 @@
     {
         var steps = new List<PipelineStep>
         {
-            Imputer, Scaler, OneHot, Drop, DateSplit, Index, Sequencer
+            Imputer, DropNullRows, Scaler, OneHot, Drop, DateSplit, Index, Sequencer
         };
         Config.Preprocessing.PipelineSpec.Steps = steps;
     }

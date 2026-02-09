@@ -99,6 +99,7 @@ Builds and applies a sklearn preprocessing pipeline to all data splits.
 |-------------|---------|
 | `dateSplit` | Extract date components (year, month, day, etc.) |
 | `imputer` | Handle missing values (mean, median, mode, constant) |
+| `dropNullRows` | Remove rows with null values in specified columns |
 | `scaler` | Standardize numeric features |
 | `onehot` | One-hot encode categorical features |
 | `drop` | Remove unwanted columns |

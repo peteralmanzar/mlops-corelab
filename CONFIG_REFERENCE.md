@@ -196,6 +196,7 @@ Preprocessing pipeline configuration.
     "steps": [
       {"dateSplit": {"columns": [], "dropColumns": true}},
       {"imputer": {"columns": ["Age"], "numeric_strategy": "median"}},
+      {"dropNullRows": {"columns": []}},
       {"scaler": {"columns": ["Pclass", "SibSp", "Age", "Parch", "Fare"]}},
       {"onehot": {"columns": ["Sex"]}},
       {"drop": {"columns": ["PassengerId", "Name", "Ticket", "Cabin", "Embarked"]}},
@@ -276,6 +277,18 @@ One-hot encodes categorical features.
 
 **Output:** Creates binary columns for each category (e.g., `Sex_male`, `Sex_female`)
 
+#### dropNullRows
+
+Drops rows that contain null values in the specified columns.
+
+```json
+{"dropNullRows": {"columns": ["TargetReturn10", "TargetClose10"]}}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `columns` | array[string] | `[]` | Columns to check for nulls. Rows with null in any of these columns are removed. |
+
 #### drop
 
 Removes columns from the dataset.
@@ -305,13 +318,15 @@ Sets a column as the dataframe index.
 Creates sequences for time series / sequence models.
 
 ```json
-{"sequencer": {"column": "value", "sequence_length": 60}}
+{"sequencer": {"column": "value", "sequence_length": 60, "sortlook": "symbol", "datetime_column": "date"}}
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `column` | string | `""` | Column to create sequences from (empty to skip) |
 | `sequence_length` | integer | `60` | Number of timesteps per sequence |
+| `sortlook` | string | `""` | Optional. Group data by this column before creating sequences (e.g., `"symbol"`). Sequences never cross group boundaries. |
+| `datetime_column` | string | `""` | Optional. Sort data (or each group) chronologically by this column before windowing. The column is kept in the output. |
 
 ---
 
