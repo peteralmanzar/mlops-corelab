@@ -20,7 +20,7 @@ from sklearn.model_selection import train_test_split, KFold, StratifiedKFold, Ti
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
-from config_load import Config
+from config_load import Config, get_runtime_config
 from mlflow_log import MLFlowLogger
 from data_pipeline import load_dataframe
 
@@ -32,9 +32,12 @@ def _get_experiment_assets(experiment_name: str):
     return raw_asset, split_asset
 
 
-def _load_raw_data(config, experiment_name: Optional[str] = None):
+def _load_raw_data(config, experiment_name: Optional[str] = None, config_path: Optional[str] = None):
     """Create the load_raw_data task function with injected config."""
     def load_raw_data(**context):
+        # Load config at RUNTIME for run isolation (parallel experiment support)
+        runtime_config = Config.load(config_path) if config_path else Config.load()
+
         # Create invocation_id with timestamp + 8-char UUID suffix
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         invocation_id = f"{timestamp}_{uuid.uuid4().hex[:8]}"
@@ -42,7 +45,7 @@ def _load_raw_data(config, experiment_name: Optional[str] = None):
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Generated Pipeline Tag: {invocation_id}")
 
-        raw_path = config.DATA.get("RAW_PATH_FILE")
+        raw_path = runtime_config.DATA.get("RAW_PATH_FILE")
 
         print(f"{exp_prefix}Loading data from: {raw_path}")
         df = load_dataframe(raw_path)
@@ -51,7 +54,8 @@ def _load_raw_data(config, experiment_name: Optional[str] = None):
         print(f"Columns: {df.columns.tolist()}")
         print(f"\nFirst few rows:\n{df.head()}")
 
-        # Push metadata to XCom
+        # Push runtime config and metadata to XCom
+        context['ti'].xcom_push(key='config_dict', value=runtime_config.to_dict())
         context['ti'].xcom_push(key='invocation_id', value=invocation_id)
         context['ti'].xcom_push(key='experiment_name', value=experiment_name)
         context['ti'].xcom_push(key='data_shape', value=df.shape)
@@ -66,22 +70,24 @@ def _load_raw_data(config, experiment_name: Optional[str] = None):
 def _perform_eda(config, experiment_name: Optional[str] = None):
     """Create the perform_eda task function with injected config."""
     def perform_eda(**context):
-        raw_path = config.DATA.get("RAW_PATH_FILE")
+        ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='raw_data_load', fallback_config=config)
+
+        raw_path = runtime_config.DATA.get("RAW_PATH_FILE")
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Performing EDA on data from: {raw_path}")
 
         df = load_dataframe(raw_path)
 
         # Initialize MLflow logger
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
             experiment_name=mlflow_experiment_name
         )
 
-        ti = context['ti']
         invocation_id = ti.xcom_pull(task_ids='raw_data_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
 
@@ -109,7 +115,7 @@ def _perform_eda(config, experiment_name: Optional[str] = None):
                 source=raw_path,
                 name="raw_data",
                 context="raw",
-                targets=",".join(config.MODEL.get("LABEL_COLUMNS", ["target"]))
+                targets=",".join(runtime_config.MODEL.get("LABEL_COLUMNS", ["target"]))
             )
 
             # Log dataset info
@@ -198,22 +204,23 @@ def _split_data(config, experiment_name: Optional[str] = None):
         import glob
 
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='raw_data_load', fallback_config=config)
         invocation_id = ti.xcom_pull(task_ids='raw_data_load', key='invocation_id')
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
-        raw_path = config.DATA.get("RAW_PATH_FILE")
+        raw_path = runtime_config.DATA.get("RAW_PATH_FILE")
         df = load_dataframe(raw_path)
 
-        fold_type = config.DATA.get("FOLD_TYPE")
-        test_size = config.DATA.get("TRAIN_TEST_SPLIT", 0.2)
-        num_folds = config.DATA.get("NUM_FOLDS", 5)
-        shuffle = config.DATA.get("KFOLD_SHUFFLE", True)
-        random_state = config.DATA.get("KFOLD_RANDOM_STATE", 42)
-        stratify_col = config.DATA.get("STRATIFY_COLUMN")
-        time_col = config.DATA.get("TIME_COLUMN")
-        ts_gap = config.DATA.get("TIME_SERIES_GAP", 0)
-        ts_expanding = config.DATA.get("TIME_SERIES_EXPANDING", True)
-        processed_path = config.DATA.get("PROCESSED_PATH")
+        fold_type = runtime_config.DATA.get("FOLD_TYPE")
+        test_size = runtime_config.DATA.get("TRAIN_TEST_SPLIT", 0.2)
+        num_folds = runtime_config.DATA.get("NUM_FOLDS", 5)
+        shuffle = runtime_config.DATA.get("KFOLD_SHUFFLE", True)
+        random_state = runtime_config.DATA.get("KFOLD_RANDOM_STATE", 42)
+        stratify_col = runtime_config.DATA.get("STRATIFY_COLUMN")
+        time_col = runtime_config.DATA.get("TIME_COLUMN")
+        ts_gap = runtime_config.DATA.get("TIME_SERIES_GAP", 0)
+        ts_expanding = runtime_config.DATA.get("TIME_SERIES_EXPANDING", True)
+        processed_path = runtime_config.DATA.get("PROCESSED_PATH")
 
         os.makedirs(processed_path, exist_ok=True)
 
@@ -238,7 +245,7 @@ def _split_data(config, experiment_name: Optional[str] = None):
         if time_col and time_col in df.columns:
             df = df.sort_values(by=time_col).reset_index(drop=True)
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
         feature_cols = [col for col in df.columns if col not in label_cols]
 
         X = df[feature_cols]
@@ -266,8 +273,8 @@ def _split_data(config, experiment_name: Optional[str] = None):
             print(f"{exp_prefix}Test set: {test_df.shape} saved to {test_path}")
 
             # Log to MLflow
-            mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-            mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+            mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+            mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
             logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
             dag_run_id = context.get('dag_run').run_id
@@ -296,6 +303,8 @@ def _split_data(config, experiment_name: Optional[str] = None):
                 if logger.get_run_id():
                     logger.end_run(status="FAILED")
 
+            # Re-push config for downstream DAGs (they pull from data_split)
+            context['ti'].xcom_push(key='config_dict', value=runtime_config.to_dict())
             context['ti'].xcom_push(key='invocation_id', value=invocation_id)
             context['ti'].xcom_push(key='split_type', value='simple')
             context['ti'].xcom_push(key='train_shape', value=train_df.shape)
@@ -371,6 +380,8 @@ def _split_data(config, experiment_name: Optional[str] = None):
                 fold_paths.append({"train": train_fold_path, "val": val_fold_path})
                 print(f"{exp_prefix}Fold {fold_idx}: train={train_fold_df.shape}, val={val_fold_df.shape}")
 
+            # Re-push config for downstream DAGs (they pull from data_split)
+            context['ti'].xcom_push(key='config_dict', value=runtime_config.to_dict())
             context['ti'].xcom_push(key='invocation_id', value=invocation_id)
             context['ti'].xcom_push(key='split_type', value=fold_type)
             context['ti'].xcom_push(key='num_folds', value=len(fold_paths))
@@ -445,7 +456,7 @@ def create_data_dag(
         # Task 1: Load raw data
         raw_data_load = PythonOperator(
             task_id="raw_data_load",
-            python_callable=_load_raw_data(config, experiment_name),
+            python_callable=_load_raw_data(config, experiment_name, config_path),
             outlets=[raw_asset],
         )
 

@@ -30,7 +30,7 @@ from airflow.sdk import task
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
-from config_load import Config
+from config_load import Config, get_runtime_config
 from mlflow_log import MLFlowLogger
 from data_pipeline import build_pipeline, save_pipeline, load_pipeline, extract_sequencer_step
 from data_transform import PipelineSequencer
@@ -49,18 +49,58 @@ def _metadata_load(config, experiment_name: Optional[str] = None):
     def metadata_load(**context):
         """
         Load split metadata by reading config directly and detecting available files.
+        Pulls runtime config from DAG 1 XCom for parallel-run isolation.
         """
         ti = context['ti']
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
+        # --- Pull runtime config from upstream DAG 1 ---
+        triggering_events = context.get('triggering_asset_events')
+        upstream_run_id = None
+
+        if triggering_events:
+            for asset_uri, events in triggering_events.items():
+                for event in events:
+                    if hasattr(event, 'source_run_id'):
+                        upstream_run_id = event.source_run_id
+                        break
+                    elif hasattr(event, 'extra') and event.extra:
+                        upstream_run_id = event.extra.get('run_id')
+                        break
+                if upstream_run_id:
+                    break
+
+        upstream_dag_id = f"{experiment_name}_01_dag_data" if experiment_name else "01_dag_data"
+
+        # Pull config_dict from DAG 1's data_split task
+        config_dict = None
+        if upstream_run_id:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='data_split', key='config_dict', run_id=upstream_run_id)
+
+        if not config_dict:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='data_split', key='config_dict', include_prior_dates=True)
+            if isinstance(config_dict, list) and config_dict:
+                config_dict = config_dict[0]
+
+        if config_dict and isinstance(config_dict, dict):
+            runtime_config = Config.from_dict(config_dict)
+            print(f"{exp_prefix}Config loaded from DAG 1 XCom")
+        else:
+            runtime_config = config
+            config_dict = config.to_dict()
+            print(f"{exp_prefix}Config XCom pull failed, using parse-time config")
+
+        # Push config for downstream tasks in this DAG
+        ti.xcom_push(key='config_dict', value=config_dict)
+
         # Read split type directly from config (source of truth)
-        fold_type = config.DATA.get("FOLD_TYPE")
+        fold_type = runtime_config.DATA.get("FOLD_TYPE")
         split_type = fold_type if fold_type else "simple"
 
         print(f"{exp_prefix}Split type from config: {split_type}")
 
         # Verify files exist for this split type
-        processed_path = config.DATA.get("PROCESSED_PATH")
+        processed_path = runtime_config.DATA.get("PROCESSED_PATH")
 
         if split_type == "simple":
             train_file = os.path.join(processed_path, "train.csv")
@@ -133,27 +173,10 @@ def _metadata_load(config, experiment_name: Optional[str] = None):
             print(f"{exp_prefix}{split_type} split: {num_folds} folds detected")
 
             if split_type == 'timeseries':
-                metadata['ts_gap'] = config.DATA.get("TIME_SERIES_GAP", 0)
-                metadata['ts_expanding'] = config.DATA.get("TIME_SERIES_EXPANDING", True)
+                metadata['ts_gap'] = runtime_config.DATA.get("TIME_SERIES_GAP", 0)
+                metadata['ts_expanding'] = runtime_config.DATA.get("TIME_SERIES_EXPANDING", True)
 
-        # Get the triggering asset events to find the correct upstream DAG run
-        triggering_events = context.get('triggering_asset_events')
-        upstream_run_id = None
-
-        if triggering_events:
-            for asset_uri, events in triggering_events.items():
-                for event in events:
-                    if hasattr(event, 'source_run_id'):
-                        upstream_run_id = event.source_run_id
-                        break
-                    elif hasattr(event, 'extra') and event.extra:
-                        upstream_run_id = event.extra.get('run_id')
-                        break
-                if upstream_run_id:
-                    break
-
-        # Pull invocation_id using specific run_id if available
-        upstream_dag_id = f"{experiment_name}_01_dag_data" if experiment_name else "01_dag_data"
+        # Pull invocation_id using the same upstream_run_id resolved above
         invocation_id = None
         if upstream_run_id:
             invocation_id = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='data_split', key='invocation_id', run_id=upstream_run_id)
@@ -187,16 +210,18 @@ def _pipeline_build(config, experiment_name: Optional[str] = None):
         """
         Build preprocessing pipeline from config and save it.
         """
+        ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
+
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Building preprocessing pipeline from config...")
 
-        pipeline = build_pipeline(config)
+        pipeline = build_pipeline(runtime_config)
 
-        artifacts_path = config.MODEL.get("ARTIFACTS_PATH", "/mlflow/artifacts")
+        artifacts_path = runtime_config.MODEL.get("ARTIFACTS_PATH", "/mlflow/artifacts")
         os.makedirs(artifacts_path, exist_ok=True)
         pipeline_path = os.path.join(artifacts_path, "preprocessing_pipeline.joblib")
 
-        ti = context['ti']
         metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
 
         if metadata['split_type'] == 'simple':
@@ -207,7 +232,7 @@ def _pipeline_build(config, experiment_name: Optional[str] = None):
         print(f"{exp_prefix}Fitting pipeline on: {train_path}")
         train_df = pd.read_csv(train_path)
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
         feature_cols = [col for col in train_df.columns if col not in label_cols]
         X_train = train_df[feature_cols]
 
@@ -221,8 +246,8 @@ def _pipeline_build(config, experiment_name: Optional[str] = None):
         print(f"{exp_prefix}Pipeline saved to: {pipeline_path}")
 
         # Initialize MLflow logger and log pipeline
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -459,11 +484,12 @@ def _create_transform_prepare_task(config, experiment_name: Optional[str] = None
     def transform_prepare(**context):
         """Prepare the list of splits to transform in parallel."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
         metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
         pipeline_path = ti.xcom_pull(task_ids='pipeline_build', key='pipeline_path')
 
-        features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        features_path = runtime_config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
+        label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
 
         splits_to_process = []
 
@@ -493,9 +519,10 @@ def _validate_transformed_data(config, experiment_name: Optional[str] = None):
     def validate_transformed_data(**context):
         """Validate transformed data for strict quality requirements."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
         metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
-        features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        features_path = runtime_config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
+        label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
 
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Starting data validation...")
@@ -530,8 +557,8 @@ def _validate_transformed_data(config, experiment_name: Optional[str] = None):
                         'name': base, 'path': path, 'y_path': y_path, 'format': fmt
                     })
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -709,8 +736,9 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
     def preprocessed_eda(**context):
         """Perform EDA on preprocessed data and log to MLflow."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
         metadata = ti.xcom_pull(task_ids='metadata_load', key='split_metadata')
-        features_path = config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
+        features_path = runtime_config.PREPROCESSING.get("FEATURES_PATH", "/home/jovyan/data/features")
 
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
@@ -722,8 +750,8 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
         print(f"{exp_prefix}Performing EDA on preprocessed data: {train_path}")
         df = pd.read_csv(train_path)
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -754,7 +782,7 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
         try:
             logger.start_run(run_name=run_name, tags=tags)
 
-            label_cols_str = ",".join(config.MODEL.get("LABEL_COLUMNS", ["target"]))
+            label_cols_str = ",".join(runtime_config.MODEL.get("LABEL_COLUMNS", ["target"]))
             logger.log_dataset(
                 df=df,
                 source=train_path,
@@ -765,7 +793,7 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
 
             logger.log_dataset_info(df, dataset_name="preprocessed_train")
 
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
             feature_cols = [col for col in df.columns if col not in label_cols]
 
             numeric_cols = df[feature_cols].select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()

@@ -24,7 +24,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
-from config_load import Config
+from config_load import Config, get_runtime_config
 from mlflow_log import MLFlowLogger
 
 
@@ -38,28 +38,13 @@ def _get_experiment_assets(experiment_name: str):
 def _load_model_metadata(config, experiment_name: Optional[str] = None):
     """Create the load_model_metadata task function with injected config."""
     def load_model_metadata(**context):
-        """Load registration info for the newly registered model version."""
+        """Load registration info for the newly registered model version.
+        Pulls runtime config from DAG 3 XCom for parallel-run isolation.
+        """
         ti = context['ti']
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
-        promotion_config = getattr(config, 'PROMOTION', {})
-        base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
-
-        # Avoid double-prefixing if base_model_name already starts with experiment_name
-        if experiment_name:
-            prefix = f"{experiment_name}_"
-            if base_model_name.startswith(prefix):
-                model_name = base_model_name
-            else:
-                model_name = f"{prefix}{base_model_name}"
-        else:
-            model_name = base_model_name
-
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
-        logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
-
-        # Get upstream DAG run from triggering asset events
+        # --- Pull runtime config from upstream DAG 3 ---
         triggering_events = context.get('triggering_asset_events')
         upstream_run_id = None
 
@@ -72,8 +57,46 @@ def _load_model_metadata(config, experiment_name: Optional[str] = None):
                 if upstream_run_id:
                     break
 
-        # Strategy 1: Pull registration_info from DAG 03 via XCom
         upstream_dag_id = f"{experiment_name}_03_dag_model" if experiment_name else "03_dag_model"
+
+        config_dict = None
+        if upstream_run_id:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='metadata_load', key='config_dict', run_id=upstream_run_id)
+
+        if not config_dict:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='metadata_load', key='config_dict', include_prior_dates=True)
+            if isinstance(config_dict, list) and config_dict:
+                config_dict = config_dict[0]
+
+        if config_dict and isinstance(config_dict, dict):
+            runtime_config = Config.from_dict(config_dict)
+            print(f"{exp_prefix}Config loaded from DAG 3 XCom")
+        else:
+            runtime_config = config
+            config_dict = config.to_dict()
+            print(f"{exp_prefix}Config XCom pull failed, using parse-time config")
+
+        # Push config for downstream tasks in this DAG
+        ti.xcom_push(key='config_dict', value=config_dict)
+
+        promotion_config = getattr(runtime_config, 'PROMOTION', {})
+        base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
+
+        # Avoid double-prefixing if base_model_name already starts with experiment_name
+        if experiment_name:
+            prefix = f"{experiment_name}_"
+            if base_model_name.startswith(prefix):
+                model_name = base_model_name
+            else:
+                model_name = f"{prefix}{base_model_name}"
+        else:
+            model_name = base_model_name
+
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
+        logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
+
+        # Strategy 1: Pull registration_info from DAG 03 via XCom
         registration_info = None
         if upstream_run_id:
             registration_info = ti.xcom_pull(
@@ -177,9 +200,10 @@ def _get_champion_model(config, experiment_name: Optional[str] = None):
     def get_champion_model(**context):
         """Retrieve the current champion model using the champion alias."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='load_model_metadata', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
-        promotion_config = getattr(config, 'PROMOTION', {})
+        promotion_config = getattr(runtime_config, 'PROMOTION', {})
 
         base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
 
@@ -195,8 +219,8 @@ def _get_champion_model(config, experiment_name: Optional[str] = None):
 
         champion_alias = promotion_config.get('CHAMPION_ALIAS', 'champion')
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -228,12 +252,13 @@ def _compare_models(config, experiment_name: Optional[str] = None):
     def compare_models(**context):
         """Compare the new model against the champion using the configured metric."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='load_model_metadata', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         registration_info = ti.xcom_pull(task_ids='load_model_metadata', key='registration_info')
         champion_info = ti.xcom_pull(task_ids='get_champion_model', key='champion_info')
 
-        promotion_config = getattr(config, 'PROMOTION', {})
+        promotion_config = getattr(runtime_config, 'PROMOTION', {})
         comparison_metric = promotion_config.get('COMPARISON_METRIC', 'test_accuracy')
         higher_is_better = promotion_config.get('HIGHER_IS_BETTER', True)
         min_improvement = promotion_config.get('MIN_IMPROVEMENT_THRESHOLD', 0.0)
@@ -317,12 +342,13 @@ def _promote_model(config, experiment_name: Optional[str] = None):
     def promote_model(**context):
         """Promote the new model to champion if comparison passed."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='load_model_metadata', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         comparison_result = ti.xcom_pull(task_ids='compare_models', key='comparison_result')
         registration_info = ti.xcom_pull(task_ids='load_model_metadata', key='registration_info')
 
-        promotion_config = getattr(config, 'PROMOTION', {})
+        promotion_config = getattr(runtime_config, 'PROMOTION', {})
         base_model_name = promotion_config.get('MODEL_NAME', 'ml_pipeline_model')
 
         # Avoid double-prefixing if base_model_name already starts with experiment_name
@@ -338,8 +364,8 @@ def _promote_model(config, experiment_name: Optional[str] = None):
         champion_alias = promotion_config.get('CHAMPION_ALIAS', 'champion')
         challenger_alias = promotion_config.get('CHALLENGER_ALIAS', 'challenger')
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
         logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
 
         promotion_result = {
@@ -386,6 +412,7 @@ def _log_promotion_results(config, experiment_name: Optional[str] = None):
     def log_promotion_results(**context):
         """Log all promotion activities and results to MLflow."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='load_model_metadata', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         registration_info = ti.xcom_pull(task_ids='load_model_metadata', key='registration_info')
@@ -393,8 +420,8 @@ def _log_promotion_results(config, experiment_name: Optional[str] = None):
         promotion_result = ti.xcom_pull(task_ids='promote_model', key='promotion_result')
         invocation_id = ti.xcom_pull(task_ids='load_model_metadata', key='invocation_id')
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -425,8 +452,8 @@ def _log_promotion_results(config, experiment_name: Optional[str] = None):
                 "new_version": str(registration_info.get('model_version')),
                 "comparison_metric": comparison_result.get('comparison_metric'),
                 "champion_version": str(comparison_result.get('champion_version', 'None')),
-                "higher_is_better": str(getattr(config, 'PROMOTION', {}).get('HIGHER_IS_BETTER', True)),
-                "min_improvement_threshold": str(getattr(config, 'PROMOTION', {}).get('MIN_IMPROVEMENT_THRESHOLD', 0.0))
+                "higher_is_better": str(getattr(runtime_config, 'PROMOTION', {}).get('HIGHER_IS_BETTER', True)),
+                "min_improvement_threshold": str(getattr(runtime_config, 'PROMOTION', {}).get('MIN_IMPROVEMENT_THRESHOLD', 0.0))
             }
             logger.log_params(params)
 

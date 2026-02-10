@@ -1,9 +1,10 @@
+import copy
 import json
 import logging
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,32 @@ class Config:
         # assign all keys as attributes
         for k, v in data.items():
             setattr(self, k, v)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert Config to a JSON-serializable dict for XCom transport.
+
+        Strips the timedelta retry_delay (not serializable) but keeps
+        retry_delay_seconds so from_dict() can reconstruct it.
+        """
+        d = copy.deepcopy(self.__dict__)
+        dda = d.get("DEFAULT_DAG_ARGS")
+        if isinstance(dda, dict):
+            dda.pop("retry_delay", None)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Config":
+        """Reconstruct a Config from a serializable dict (e.g. from XCom).
+
+        Re-creates the timedelta retry_delay from retry_delay_seconds.
+        No file I/O or validation — the dict was already validated at load time.
+        """
+        data = copy.deepcopy(d)
+        dda = data.get("DEFAULT_DAG_ARGS", {})
+        rds = dda.get("retry_delay_seconds")
+        if rds is not None:
+            dda["retry_delay"] = timedelta(seconds=int(rds))
+        return cls(data)
 
     @staticmethod
     def _config_path() -> Path:
@@ -181,7 +208,6 @@ class Config:
         # Keep the seconds key as well for logging/backwards compatibility
 
         # Log the loaded config (masking none-sensitive fields)
-        import copy
         log_copy = copy.deepcopy(merged)
         # Replace timedelta with seconds for logging
         try:
@@ -205,4 +231,29 @@ class Config:
         return config_obj
 
 
-__all__ = ["Config"]
+def get_runtime_config(ti, source_task_id: str, fallback_config: Optional[Config] = None) -> Config:
+    """Pull config from XCom and reconstruct a Config object.
+
+    Tries to pull 'config_dict' pushed by source_task_id within the same DAG run.
+    Falls back to fallback_config (the parse-time closure) if the pull fails.
+
+    Args:
+        ti: Airflow TaskInstance (from context['ti']).
+        source_task_id: Task ID that pushed config_dict in this DAG.
+        fallback_config: Parse-time Config to use if XCom pull fails.
+    """
+    try:
+        config_dict = ti.xcom_pull(task_ids=source_task_id, key='config_dict')
+        if config_dict and isinstance(config_dict, dict):
+            logger.info("Loaded runtime config from XCom (source: %s)", source_task_id)
+            return Config.from_dict(config_dict)
+    except Exception as e:
+        logger.warning("Failed to pull config from XCom (source: %s): %s", source_task_id, e)
+
+    if fallback_config is not None:
+        logger.info("Using fallback parse-time config")
+        return fallback_config
+    raise ValueError(f"No config found in XCom from task '{source_task_id}' and no fallback provided")
+
+
+__all__ = ["Config", "get_runtime_config"]

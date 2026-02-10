@@ -33,7 +33,7 @@ from tensorflow.keras.models import clone_model
 
 # Add utils to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
-from config_load import Config
+from config_load import Config, get_runtime_config
 from mlflow_log import MLFlowLogger
 from model_template import (
     GetModelTemplateMLPRegression,
@@ -92,16 +92,54 @@ def _detect_task_type(y: pd.DataFrame, label_cols: List[str]) -> Tuple[str, int]
 def _metadata_load(config, experiment_name: Optional[str] = None):
     """Create the metadata_load task function with injected config."""
     def metadata_load(**context):
-        """Load preprocessed data metadata."""
+        """Load preprocessed data metadata. Pulls runtime config from DAG 2 XCom."""
         ti = context['ti']
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
-        fold_type = config.DATA.get("FOLD_TYPE")
+        # --- Pull runtime config from upstream DAG 2 ---
+        triggering_events = context.get('triggering_asset_events')
+        upstream_run_id = None
+
+        if triggering_events:
+            for asset_uri, events in triggering_events.items():
+                for event in events:
+                    if hasattr(event, 'source_run_id'):
+                        upstream_run_id = event.source_run_id
+                        break
+                    elif hasattr(event, 'extra') and event.extra:
+                        upstream_run_id = event.extra.get('run_id')
+                        break
+                if upstream_run_id:
+                    break
+
+        upstream_dag_id = f"{experiment_name}_02_dag_preprocess" if experiment_name else "02_dag_preprocess"
+
+        config_dict = None
+        if upstream_run_id:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='metadata_load', key='config_dict', run_id=upstream_run_id)
+
+        if not config_dict:
+            config_dict = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='metadata_load', key='config_dict', include_prior_dates=True)
+            if isinstance(config_dict, list) and config_dict:
+                config_dict = config_dict[0]
+
+        if config_dict and isinstance(config_dict, dict):
+            runtime_config = Config.from_dict(config_dict)
+            print(f"{exp_prefix}Config loaded from DAG 2 XCom")
+        else:
+            runtime_config = config
+            config_dict = config.to_dict()
+            print(f"{exp_prefix}Config XCom pull failed, using parse-time config")
+
+        # Push config for downstream tasks in this DAG
+        ti.xcom_push(key='config_dict', value=config_dict)
+
+        fold_type = runtime_config.DATA.get("FOLD_TYPE")
         split_type = fold_type if fold_type else "simple"
 
         print(f"{exp_prefix}Split type from config: {split_type}")
 
-        features_path = config.PREPROCESSING.get("FEATURES_PATH", "/opt/airflow/data/features")
+        features_path = runtime_config.PREPROCESSING.get("FEATURES_PATH", "/opt/airflow/data/features")
 
         import glob
 
@@ -187,24 +225,7 @@ def _metadata_load(config, experiment_name: Optional[str] = None):
                     f"Please run 02_dag_preprocess to generate transformed {fold_type} data."
                 )
 
-        # Get the triggering asset events
-        triggering_events = context.get('triggering_asset_events')
-        upstream_run_id = None
-
-        if triggering_events:
-            for asset_uri, events in triggering_events.items():
-                for event in events:
-                    if hasattr(event, 'source_run_id'):
-                        upstream_run_id = event.source_run_id
-                        break
-                    elif hasattr(event, 'extra') and event.extra:
-                        upstream_run_id = event.extra.get('run_id')
-                        break
-                if upstream_run_id:
-                    break
-
-        # Pull invocation_id from metadata_load task
-        upstream_dag_id = f"{experiment_name}_02_dag_preprocess" if experiment_name else "02_dag_preprocess"
+        # Pull invocation_id using the same upstream_run_id resolved above
         invocation_id = None
         if upstream_run_id:
             invocation_id = ti.xcom_pull(dag_id=upstream_dag_id, task_ids='metadata_load', key='invocation_id', run_id=upstream_run_id)
@@ -241,9 +262,11 @@ def _model_build(config, experiment_name: Optional[str] = None):
     """Create the model_build task function with injected config."""
     def model_build(**context):
         """Build model configuration by auto-detecting task type."""
+        ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
+
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}=== MODEL BUILD STARTING ===")
-        ti = context['ti']
 
         folds_info = ti.xcom_pull(task_ids='metadata_load', key='folds_info')
 
@@ -271,14 +294,14 @@ def _model_build(config, experiment_name: Optional[str] = None):
             print(f"{exp_prefix}Features: {num_features}, Sequence length: {sequence_length}")
             print(f"{exp_prefix}Samples: {num_samples} sequences")
 
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
             y = pd.DataFrame(y_arr, columns=label_cols)
         else:
             # Only read a small sample for task-type detection and feature counting;
             # full data is loaded per-fold in train_fold_model.
             df_sample = pd.read_csv(train_path, nrows=1000)
 
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
             feature_cols = [col for col in df_sample.columns if col not in label_cols]
 
             X = df_sample[feature_cols]
@@ -297,7 +320,7 @@ def _model_build(config, experiment_name: Optional[str] = None):
         task_type, num_classes = _detect_task_type(y, label_cols)
         print(f"{exp_prefix}Task type detected: {task_type}, num_classes: {num_classes}")
 
-        optimizer_str = config.MODEL.get("OPTIMIZER", "adam").lower()
+        optimizer_str = runtime_config.MODEL.get("OPTIMIZER", "adam").lower()
         optimizer_map = {
             "adam": Optimizer.ADAM,
             "sgd": Optimizer.SGD,
@@ -316,10 +339,10 @@ def _model_build(config, experiment_name: Optional[str] = None):
             'num_features': num_features,
             'optimizer': optimizer,
             'optimizer_name': optimizer_str,
-            'epochs': config.MODEL.get("EPOCHS", 50),
-            'batch_size': config.MODEL.get("BATCH_SIZE", 32),
-            'validation_split': config.MODEL.get("VALIDATION_SPLIT", 0.2),
-            'early_stopping_patience': config.MODEL.get("EARLY_STOPPING_PATIENCE", 10)
+            'epochs': runtime_config.MODEL.get("EPOCHS", 50),
+            'batch_size': runtime_config.MODEL.get("BATCH_SIZE", 32),
+            'validation_split': runtime_config.MODEL.get("VALIDATION_SPLIT", 0.2),
+            'early_stopping_patience': runtime_config.MODEL.get("EARLY_STOPPING_PATIENCE", 10)
         }
 
         if sequence_length is not None:
@@ -328,8 +351,8 @@ def _model_build(config, experiment_name: Optional[str] = None):
         model_config_serializable = {k: (v.value if hasattr(v, 'value') else v) for k, v in model_config.items()}
 
         # MLflow logging for D3S1
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -403,9 +426,10 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
 
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
 
         # Check if tuning is enabled
-        tuning_config = getattr(config, 'HYPERPARAMETER_TUNING', {})
+        tuning_config = getattr(runtime_config, 'HYPERPARAMETER_TUNING', {})
         if not tuning_config.get('ENABLED', False):
             print(f"{exp_prefix}Hyperparameter tuning DISABLED. Using config defaults.")
             context['ti'].xcom_push(key='best_hyperparams', value=None)
@@ -439,13 +463,13 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
             y = np.load(y_path).reshape(-1, 1)
         else:
             train_df = pd.read_csv(train_path)
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
             feature_cols = [col for col in train_df.columns if col not in label_cols]
             X = train_df[feature_cols].values
             y = train_df[label_cols].values
 
         # Subsample tuning data if it exceeds MAX_TUNING_SAMPLES
-        random_seed = config.RANDOM_SEED if hasattr(config, 'RANDOM_SEED') else 42
+        random_seed = runtime_config.RANDOM_SEED if hasattr(runtime_config, 'RANDOM_SEED') else 42
         max_tuning_samples = tuning_config.get('MAX_TUNING_SAMPLES')
         if max_tuning_samples and len(X) > max_tuning_samples:
             original_len = len(X)
@@ -464,8 +488,8 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
         print(f"{exp_prefix}Tuning data: X_train={X_train.shape}, X_val={X_val.shape}")
 
         # Initialize MLflow for tuning run
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -507,7 +531,7 @@ def _hyperparameter_tune(config, experiment_name: Optional[str] = None):
             # Create tuner and run study
             sequence_length = model_config.get('sequence_length')
             tuner = OptunaHyperparameterTuner(
-                config=config,
+                config=runtime_config,
                 task_type=task_type,
                 num_features=num_features,
                 num_classes=num_classes,
@@ -571,6 +595,10 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             model_config: Model configuration from model_build task
             best_hyperparams: Optional hyperparameters from Optuna tuning
         """
+        context = get_current_context()
+        ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
+
         fold_id = fold_info['fold_id']
         train_path = fold_info['train_path']
         test_path = fold_info['test_path']
@@ -596,7 +624,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             train_df = pd.read_csv(train_path)
             test_df = pd.read_csv(test_path)
 
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
             feature_cols = [col for col in train_df.columns if col not in label_cols]
 
             X_train = train_df[feature_cols].values
@@ -618,7 +646,7 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
             optimizer = optimizer_value
 
         # Build model with hyperparams if available
-        model_builder = ModelBuilder(config)
+        model_builder = ModelBuilder(runtime_config)
         model = model_builder.build_model_for_training(
             task_type=task_type,
             num_features=num_features,
@@ -630,16 +658,13 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         print(f"\n{exp_prefix}Model instantiated: {task_type}")
         model.summary()
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
             experiment_name=mlflow_experiment_name
         )
-
-        context = get_current_context()
-        ti = context['ti']
 
         invocation_id = ti.xcom_pull(task_ids='metadata_load', key='invocation_id')
         dag_run_id = context.get('dag_run').run_id
@@ -712,8 +737,8 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
 
             # Log RAW input feature metadata for serving layer (not post-processed)
             # Get raw columns from source data, excluding label column
-            raw_data_path = config.DATA.get("RAW_PATH_FILE")
-            label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+            raw_data_path = runtime_config.DATA.get("RAW_PATH_FILE")
+            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
 
             if raw_data_path and os.path.exists(raw_data_path):
                 raw_df = pd.read_csv(raw_data_path, nrows=1)
@@ -821,6 +846,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
     def model_register(**context):
         """Aggregate fold results, identify best model, and register to MLflow Model Registry."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         fold_results = ti.xcom_pull(task_ids='train_fold_model')
@@ -875,8 +901,8 @@ def _model_register(config, experiment_name: Optional[str] = None):
             else:
                 print(f"  Fold {fold_id}: {best_metric_key}={metric_val}")
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
 
         logger = MLFlowLogger(
             tracking_uri=mlflow_tracking_uri,
@@ -895,7 +921,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
 
         print(f"{exp_prefix}Combining preprocessing pipeline (mlflow run: {pipeline_mlflow_run_id}) with Keras model (run: {best_fold['run_id']})")
 
-        builder = ModelBuilder(config)
+        builder = ModelBuilder(runtime_config)
         preprocessing_pipeline = builder.load_preprocessing_pipeline(pipeline_run_id=pipeline_mlflow_run_id, artifact_path='preprocessing_pipeline')
         trained_model = builder.load_trained_model(model_run_id=best_fold['run_id'], artifact_path='fold_model')
         combined_pipeline, combined_path = builder.combine_pipeline_and_model(preprocessing_pipeline, trained_model, save_to_disk=True)
@@ -967,12 +993,12 @@ def _model_register(config, experiment_name: Optional[str] = None):
             print(f"{exp_prefix}Warning: Could not transfer feature metadata from best fold: {e}")
 
         try:
-            processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
+            processed_path = runtime_config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
             sample_df = None
             sample_file = os.path.join(processed_path, 'train.csv')
             if os.path.exists(sample_file):
                 sample_df = pd.read_csv(sample_file).head(5)
-            input_example = sample_df[[c for c in sample_df.columns if c not in config.MODEL.get('LABEL_COLUMNS', ['target'])]] if sample_df is not None else None
+            input_example = sample_df[[c for c in sample_df.columns if c not in runtime_config.MODEL.get('LABEL_COLUMNS', ['target'])]] if sample_df is not None else None
         except Exception:
             input_example = None
 
@@ -985,7 +1011,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
         combined_model_uri = f"runs:/{combined_run_id}/preprocessed_model"
 
         # Use experiment-scoped model name
-        promotion_config = getattr(config, 'PROMOTION', {})
+        promotion_config = getattr(runtime_config, 'PROMOTION', {})
         base_model_name = promotion_config.get('MODEL_NAME', 'model')
 
         # Avoid double-prefixing if base_model_name already starts with experiment_name
@@ -1048,6 +1074,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
     def validate_registered_model(**context):
         """Validate the registered combined model end-to-end."""
         ti = context['ti']
+        runtime_config = get_runtime_config(ti, source_task_id='metadata_load', fallback_config=config)
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
         registration_info = ti.xcom_pull(task_ids='model_register', key='registration_info')
@@ -1061,8 +1088,8 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         if model_name is None or model_version is None:
             raise ValueError("registration_info missing model_name or model_version")
 
-        mlflow_tracking_uri = config.MLFLOW.get("TRACKING_URI")
-        mlflow_experiment_name = config.MLFLOW.get("EXPERIMENT_NAME")
+        mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
+        mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
         logger = MLFlowLogger(tracking_uri=mlflow_tracking_uri, experiment_name=mlflow_experiment_name)
 
         model_uri = f"models:/{model_name}/{model_version}"
@@ -1071,8 +1098,8 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         except Exception as e:
             raise RuntimeError(f"Failed to load registered combined pipeline {model_uri}: {e}")
 
-        processed_path = config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
-        fold_type = config.DATA.get("FOLD_TYPE")
+        processed_path = runtime_config.DATA.get("PROCESSED_PATH") or os.path.join(os.getcwd(), 'data', 'processed')
+        fold_type = runtime_config.DATA.get("FOLD_TYPE")
         split_type = fold_type if fold_type else "simple"
 
         if split_type == "simple":
@@ -1088,9 +1115,9 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
 
         print(f"{exp_prefix}Loading validation sample from: {sample_path}")
         sample_df = pd.read_csv(sample_path)
-        sample_size = config.MODEL.get("VALIDATION_SAMPLE_SIZE", 100)
+        sample_size = runtime_config.MODEL.get("VALIDATION_SAMPLE_SIZE", 100)
         # For sequence models, ensure enough rows for at least a few sequences per group
-        seq_spec = config.PREPROCESSING.get('PIPELINE_SPEC', {}) if isinstance(getattr(config, 'PREPROCESSING', None), dict) else {}
+        seq_spec = runtime_config.PREPROCESSING.get('PIPELINE_SPEC', {}) if isinstance(getattr(runtime_config, 'PREPROCESSING', None), dict) else {}
         for _s in seq_spec.get('steps', []):
             if isinstance(_s, dict) and next(iter(_s.keys()), None) in ('sequencer', 'sequence'):
                 _seq_len = (_s[next(iter(_s.keys()))] or {}).get('sequence_length', 60)
@@ -1098,7 +1125,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
                 break
         sample_df = sample_df.head(sample_size)
 
-        label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
+        label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
         X_sample = sample_df[[c for c in sample_df.columns if c not in label_cols]]
 
         dag_run_id = context.get('dag_run').run_id
