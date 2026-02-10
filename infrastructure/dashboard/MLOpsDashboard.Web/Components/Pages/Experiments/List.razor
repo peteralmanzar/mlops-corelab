@@ -135,6 +135,7 @@
     private string GetStatusBadge(string status) => status switch
     {
         "generated" => "bg-success",
+        "discovered" => "bg-info",
         "active" => "bg-primary",
         "error" => "bg-danger",
         "archived" => "bg-secondary",

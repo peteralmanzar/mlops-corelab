@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using MLOpsDashboard.Core.Models;
 using MLOpsDashboard.Infrastructure.Data;
@@ -26,6 +27,7 @@ public class TemplateService
     public async Task<List<ExperimentTemplate>> GetAllTemplatesAsync()
     {
         return await _context.ExperimentTemplates
+            .Where(t => !t.Name.StartsWith("_"))
             .OrderByDescending(t => t.UpdatedAt)
             .ToListAsync();
     }
@@ -204,5 +206,89 @@ public class TemplateService
 
         _logger.LogInformation("Deleted experiment: {Name}", experiment.Name);
         return true;
+    }
+
+    /// <summary>
+    /// Scan the filesystem for experiment configs not yet tracked in the database.
+    /// Creates a sentinel "_discovered" template if needed, and inserts discovered experiments.
+    /// </summary>
+    public async Task<int> DiscoverExperimentsAsync(string dagsPath)
+    {
+        var configsDir = Path.Combine(dagsPath, "configs");
+        if (!Directory.Exists(configsDir))
+        {
+            _logger.LogInformation("Configs directory not found at {Path}, skipping discovery", configsDir);
+            return 0;
+        }
+
+        var discovered = 0;
+        Guid? sentinelTemplateId = null;
+
+        foreach (var experimentDir in Directory.GetDirectories(configsDir))
+        {
+            var experimentName = Path.GetFileName(experimentDir);
+            var configPath = Path.Combine(experimentDir, "config.json");
+
+            if (!File.Exists(configPath))
+            {
+                _logger.LogDebug("No config.json in {Dir}, skipping", experimentDir);
+                continue;
+            }
+
+            if (await ExperimentExistsAsync(experimentName))
+                continue;
+
+            JsonDocument? configDoc = null;
+            try
+            {
+                var json = await File.ReadAllTextAsync(configPath);
+                configDoc = JsonDocument.Parse(json);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read/parse config for discovered experiment '{Name}', skipping", experimentName);
+                continue;
+            }
+
+            sentinelTemplateId ??= await EnsureSentinelTemplateAsync();
+
+            var experiment = new GeneratedExperiment
+            {
+                Name = experimentName,
+                TemplateId = sentinelTemplateId.Value,
+                ConfigSnapshot = configDoc,
+                GeneratedPath = dagsPath,
+                Status = "discovered"
+            };
+
+            await CreateExperimentAsync(experiment);
+            discovered++;
+            _logger.LogInformation("Discovered experiment '{Name}' from filesystem", experimentName);
+        }
+
+        if (discovered > 0)
+            _logger.LogInformation("Discovered {Count} new experiment(s) from filesystem", discovered);
+
+        return discovered;
+    }
+
+    /// <summary>
+    /// Ensure the sentinel "_discovered" template exists, creating it if needed.
+    /// </summary>
+    private async Task<Guid> EnsureSentinelTemplateAsync()
+    {
+        const string sentinelName = "_discovered";
+        var existing = await GetTemplateByNameAsync(sentinelName);
+        if (existing != null)
+            return existing.Id;
+
+        var template = new ExperimentTemplate
+        {
+            Name = sentinelName,
+            Description = "System template for experiments discovered from filesystem",
+            TemplateType = "full_pipeline"
+        };
+        var created = await CreateTemplateAsync(template);
+        return created.Id;
     }
 }

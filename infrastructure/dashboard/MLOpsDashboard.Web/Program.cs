@@ -62,4 +62,24 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// Discover experiments from filesystem configs not yet tracked in the database
+using (var scope = app.Services.CreateScope())
+{
+    var templateService = scope.ServiceProvider.GetRequiredService<TemplateService>();
+    var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    var dagsPath = config["DagOutput:Path"] ?? "/app/dags";
+
+    try
+    {
+        var count = await templateService.DiscoverExperimentsAsync(dagsPath);
+        if (count > 0)
+            logger.LogInformation("Experiment discovery complete: {Count} new experiment(s) registered", count);
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Experiment discovery failed - dashboard will continue without discovered experiments");
+    }
+}
+
 app.Run();
