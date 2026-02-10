@@ -1,3 +1,6 @@
+import os
+import logging
+
 import pandas as pd
 import numpy as np
 from pandas import DataFrame
@@ -5,6 +8,8 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder as SklearnOneHotEncoder, StandardScaler
 from typing import List, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 class PipelineImputer(BaseEstimator, TransformerMixin):
     """
@@ -426,48 +431,100 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
     def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSequencer':
         return self
 
-    def transform(self, X: DataFrame) -> DataFrame:
+    def transform(self, X: DataFrame) -> np.ndarray:
+        """In-memory (or memmap-backed) sequencing.
+
+        Groups by ``sortlook``, sorts by ``datetime_column``, builds sliding
+        windows of ``sequence_length``, and returns a 3-D numpy array
+        ``(total_sequences, sequence_length, num_features)``.
+
+        For large datasets (estimated >500 MB), the array is backed by a
+        numpy memmap file so memory stays bounded.
+
+        If the label column (``self.column``) is present in *X* the
+        corresponding y values are extracted and stored in ``self.last_y_``
+        so training code can retrieve them after the transform.  When the
+        label column is absent (inference) ``self.last_y_`` is set to None.
+        """
         if X is None:
             raise ValueError("Input X cannot be None for PipelineSequencer.transform")
-        # No-op if column not specified or not in dataframe
-        if not self.column or not isinstance(self.column, str) or self.column.strip() == "":
-            return X.copy()
-        if self.column not in X.columns:
-            return X.copy()
-        # Only create sequences if properly configured
-        sequences, labels = self.create_sequences(X)
-        # For now, just return the input as-is since sequences return incompatible format
-        # This transformer needs broader refactoring for sklearn compatibility
-        return X.copy()
 
-    def create_sequences(self, data: DataFrame) -> Tuple[List[DataFrame], DataFrame]:
-        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip() and self.sortlook in data.columns:
-            sequencedX = []
-            sequencedy = []
-            for _, group_df in data.groupby(self.sortlook, sort=False):
-                if self._has_datetime_column(group_df):
-                    group_df = group_df.copy()
-                    group_df[self.datetime_column] = pd.to_datetime(group_df[self.datetime_column], errors='coerce')
-                    group_df = group_df.sort_values(by=self.datetime_column)
-                group_df = group_df.reset_index(drop=True)
-                for i in range(self.sequence_length, len(group_df)):
-                    sequence_df = group_df.iloc[i - self.sequence_length:i].copy()
-                    sequencedX.append(sequence_df)
-                    sequencedy.append(group_df.iloc[i][self.column])
-            label_df = pd.DataFrame(sequencedy, columns=['label'])
-            return sequencedX, label_df
+        # Determine which columns are features vs helpers/label
+        exclude_cols = set()
+        has_labels = self.column and self.column in X.columns
+        if has_labels:
+            exclude_cols.add(self.column)
+        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip():
+            exclude_cols.add(self.sortlook)
+        if self.datetime_column and isinstance(self.datetime_column, str) and self.datetime_column.strip():
+            exclude_cols.add(self.datetime_column)
+        feature_cols = [c for c in X.columns if c not in exclude_cols]
 
-        if self._has_datetime_column(data):
-            data = data.copy()
-            data[self.datetime_column] = pd.to_datetime(data[self.datetime_column], errors='coerce')
-            data = data.sort_values(by=self.datetime_column).reset_index(drop=True)
+        seq_len = self.sequence_length
 
-        sequencedX = []
-        sequencedy = []
-        for i in range(self.sequence_length, len(data)):
-            sequence_df = data.iloc[i-self.sequence_length:i].copy()
-            sequencedX.append(sequence_df)
-            sequencedy.append(data.iloc[i][self.column])
+        # Build groups
+        if (self.sortlook and isinstance(self.sortlook, str)
+                and self.sortlook.strip() and self.sortlook in X.columns):
+            groups = list(X.groupby(self.sortlook, sort=False))
+        else:
+            groups = [(None, X)]
 
-        label_df = pd.DataFrame(sequencedy, columns=['label'])
-        return sequencedX, label_df
+        # First pass: count total sequences and prepare sorted groups
+        prepared = []
+        total = 0
+        for key, gdf in groups:
+            if self._has_datetime_column(gdf):
+                gdf = gdf.copy()
+                gdf[self.datetime_column] = pd.to_datetime(
+                    gdf[self.datetime_column], errors='coerce')
+                gdf = gdf.sort_values(by=self.datetime_column)
+            gdf = gdf.reset_index(drop=True)
+            n = max(0, len(gdf) - seq_len)
+            if n > 0:
+                prepared.append((key, gdf, n))
+                total += n
+
+        if total == 0:
+            raise ValueError(
+                f"No sequences can be created: all groups have fewer than "
+                f"{seq_len} rows (sequence_length)."
+            )
+
+        num_features = len(feature_cols)
+        estimated_bytes = total * seq_len * num_features * 4  # float32
+        MEMMAP_THRESHOLD = 500 * 1024 * 1024  # 500 MB
+
+        if estimated_bytes > MEMMAP_THRESHOLD:
+            import tempfile
+            self._memmap_path = os.path.join(
+                tempfile.gettempdir(), f"seq_{id(self)}_{os.getpid()}.npy")
+            X_arr = np.lib.format.open_memmap(
+                self._memmap_path, dtype='float32', mode='w+',
+                shape=(total, seq_len, num_features))
+            logger.info(
+                "Using memmap-backed array at %s — shape: (%d, %d, %d), "
+                "estimated size: %.1f MB",
+                self._memmap_path, total, seq_len, num_features,
+                estimated_bytes / (1024 * 1024))
+        else:
+            X_arr = np.empty((total, seq_len, num_features), dtype='float32')
+
+        y_arr = np.empty(total, dtype='float32') if has_labels else None
+
+        idx = 0
+        for key, gdf, n in prepared:
+            feat = gdf[feature_cols].values.astype(np.float32)
+            offsets = np.arange(n)
+            row_indices = offsets[:, None] + np.arange(seq_len)
+            X_arr[idx:idx + n] = feat[row_indices]
+            if has_labels:
+                labels = gdf[self.column].values.astype(np.float32)
+                y_arr[idx:idx + n] = labels[offsets + seq_len]
+            idx += n
+            logger.info("Sequenced group %s: %d sequences", key, n)
+
+        if isinstance(X_arr, np.memmap):
+            X_arr.flush()
+
+        self.last_y_ = y_arr
+        return X_arr

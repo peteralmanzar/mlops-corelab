@@ -432,10 +432,103 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
     def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSequencer':
         return self
 
-    def transform(self, X: DataFrame) -> DataFrame:
+    def transform(self, X: DataFrame) -> np.ndarray:
+        """In-memory (or memmap-backed) sequencing.
+
+        Groups by ``sortlook``, sorts by ``datetime_column``, builds sliding
+        windows of ``sequence_length``, and returns a 3-D numpy array
+        ``(total_sequences, sequence_length, num_features)``.
+
+        For large datasets (estimated >500 MB), the array is backed by a
+        numpy memmap file so memory stays bounded.
+
+        If the label column (``self.column``) is present in *X* the
+        corresponding y values are extracted and stored in ``self.last_y_``
+        so training code can retrieve them after the transform.  When the
+        label column is absent (inference) ``self.last_y_`` is set to None.
+        """
         if X is None:
             raise ValueError("Input X cannot be None for PipelineSequencer.transform")
-        return X.copy()
+
+        # Determine which columns are features vs helpers/label
+        exclude_cols = set()
+        has_labels = self.column and self.column in X.columns
+        if has_labels:
+            exclude_cols.add(self.column)
+        if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip():
+            exclude_cols.add(self.sortlook)
+        if self.datetime_column and isinstance(self.datetime_column, str) and self.datetime_column.strip():
+            exclude_cols.add(self.datetime_column)
+        feature_cols = [c for c in X.columns if c not in exclude_cols]
+
+        seq_len = self.sequence_length
+
+        # Build groups
+        if (self.sortlook and isinstance(self.sortlook, str)
+                and self.sortlook.strip() and self.sortlook in X.columns):
+            groups = list(X.groupby(self.sortlook, sort=False))
+        else:
+            groups = [(None, X)]
+
+        # First pass: count total sequences and prepare sorted groups
+        prepared = []
+        total = 0
+        for key, gdf in groups:
+            if self._has_datetime_column(gdf):
+                gdf = gdf.copy()
+                gdf[self.datetime_column] = pd.to_datetime(
+                    gdf[self.datetime_column], errors='coerce')
+                gdf = gdf.sort_values(by=self.datetime_column)
+            gdf = gdf.reset_index(drop=True)
+            n = max(0, len(gdf) - seq_len)
+            if n > 0:
+                prepared.append((key, gdf, n))
+                total += n
+
+        if total == 0:
+            raise ValueError(
+                f"No sequences can be created: all groups have fewer than "
+                f"{seq_len} rows (sequence_length)."
+            )
+
+        num_features = len(feature_cols)
+        estimated_bytes = total * seq_len * num_features * 4  # float32
+        MEMMAP_THRESHOLD = 500 * 1024 * 1024  # 500 MB
+
+        if estimated_bytes > MEMMAP_THRESHOLD:
+            import tempfile
+            self._memmap_path = os.path.join(
+                tempfile.gettempdir(), f"seq_{id(self)}_{os.getpid()}.npy")
+            X_arr = np.lib.format.open_memmap(
+                self._memmap_path, dtype='float32', mode='w+',
+                shape=(total, seq_len, num_features))
+            logger.info(
+                "Using memmap-backed array at %s — shape: (%d, %d, %d), "
+                "estimated size: %.1f MB",
+                self._memmap_path, total, seq_len, num_features,
+                estimated_bytes / (1024 * 1024))
+        else:
+            X_arr = np.empty((total, seq_len, num_features), dtype='float32')
+
+        y_arr = np.empty(total, dtype='float32') if has_labels else None
+
+        idx = 0
+        for key, gdf, n in prepared:
+            feat = gdf[feature_cols].values.astype(np.float32)
+            offsets = np.arange(n)
+            row_indices = offsets[:, None] + np.arange(seq_len)
+            X_arr[idx:idx + n] = feat[row_indices]
+            if has_labels:
+                labels = gdf[self.column].values.astype(np.float32)
+                y_arr[idx:idx + n] = labels[offsets + seq_len]
+            idx += n
+            logger.info("Sequenced group %s: %d sequences", key, n)
+
+        if isinstance(X_arr, np.memmap):
+            X_arr.flush()
+
+        self.last_y_ = y_arr
+        return X_arr
 
     def sequence_to_disk(self, data: DataFrame, label_column: str,
                          output_dir: str, prefix: str,

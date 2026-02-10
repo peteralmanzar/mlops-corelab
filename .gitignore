@@ -244,3 +244,5 @@ artifacts/
 
 # Generated experiment configs
 src/dags/configs/*/config.json
+
+nul

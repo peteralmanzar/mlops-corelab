@@ -9,6 +9,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 from config_load import Config
 from mlflow_log import MLFlowLogger
+from data_transform import PipelineFeatureDropper, PipelineSequencer
 from typing import Optional, Dict, Any
 from model_template import (
     GetModelTemplateMLPRegression,
@@ -190,6 +191,27 @@ class ModelBuilder:
         model = MLFlowLogger.load_keras_model(model_uri)
         return model
 
+    def _get_sequencer_helper_columns(self):
+        """Get columns used by the sequencer (sortlook, datetime_column) that
+        should be dropped before the model in a combined inference pipeline."""
+        cols = []
+        spec = getattr(self.config, 'PREPROCESSING', {})
+        if isinstance(spec, dict):
+            spec = spec.get('PIPELINE_SPEC', {})
+        else:
+            spec = {}
+        for step in spec.get('steps', []):
+            if not isinstance(step, dict):
+                continue
+            key = next(iter(step.keys()), None)
+            if key in ('sequencer', 'sequence'):
+                cfg = step[key] or {}
+                for field in ('sortlook', 'symbol_column', 'datetime_column', 'datetimeColumn'):
+                    val = cfg.get(field)
+                    if val and isinstance(val, str) and val.strip():
+                        cols.append(val)
+        return cols
+
     def combine_pipeline_and_model(self, pipeline: Pipeline, keras_model, save_to_disk: bool = True) -> Pipeline:
         """
         Combine preprocessing pipeline and a trained Keras model into an sklearn Pipeline.
@@ -199,7 +221,22 @@ class ModelBuilder:
             raise TypeError("pipeline must be an sklearn.pipeline.Pipeline instance")
 
         wrapper = KerasModelWrapper(keras_model)
-        combined = Pipeline([('preprocessing', pipeline), ('model', wrapper)])
+
+        # Check if preprocessing pipeline already contains a sequencer.
+        # When present, the sequencer's transform() handles dropping helper
+        # columns (sortlook, datetime) and producing 3D input for the model.
+        has_sequencer = any(
+            isinstance(step, PipelineSequencer) for _, step in pipeline.steps
+        )
+
+        steps = [('preprocessing', pipeline)]
+        if not has_sequencer:
+            # Non-sequence models: drop helper columns if any remain
+            sequencer_cols = self._get_sequencer_helper_columns()
+            if sequencer_cols:
+                steps.append(('drop_sequencer_cols', PipelineFeatureDropper(columns=sequencer_cols)))
+        steps.append(('model', wrapper))
+        combined = Pipeline(steps)
 
         artifacts_path = self.config.MODEL.get("ARTIFACTS_PATH", os.path.join(os.getcwd(), "artifacts"))
         os.makedirs(artifacts_path, exist_ok=True)

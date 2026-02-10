@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config
 from mlflow_log import MLFlowLogger
 from data_pipeline import build_pipeline, save_pipeline, load_pipeline, extract_sequencer_step
+from data_transform import PipelineSequencer
 
 
 def _get_experiment_assets(experiment_name: str):
@@ -267,14 +268,19 @@ def _pipeline_build(config, experiment_name: Optional[str] = None):
             }
             logger.log_params(pipeline_params)
 
+            # For sequence pipelines, X_transformed is 3D (sequences, seq_len, features).
+            # Use the last dimension as the feature count.
+            if hasattr(X_transformed, 'shape'):
+                n_output = X_transformed.shape[-1]
+            else:
+                n_output = len(X_transformed.columns)
             metrics = {
                 "n_pipeline_steps": len(pipeline.steps),
                 "n_input_features": X_train.shape[1],
-                "n_output_features": X_transformed.shape[1] if hasattr(X_transformed, 'shape') else len(X_transformed.columns),
+                "n_output_features": n_output,
             }
-            if X_train.shape[1] > 0:
-                output_features = X_transformed.shape[1] if hasattr(X_transformed, 'shape') else len(X_transformed.columns)
-                metrics["dimensionality_reduction_ratio"] = round(X_train.shape[1] / output_features, 4)
+            if X_train.shape[1] > 0 and n_output > 0:
+                metrics["dimensionality_reduction_ratio"] = round(X_train.shape[1] / n_output, 4)
             logger.log_metrics(metrics)
 
             logger.log_sklearn_pipeline(
@@ -335,8 +341,7 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
         print(f"{exp_prefix}Processing fold: {fold}")
 
-        raw_pipeline = load_pipeline(pipeline_path)
-        pipeline, sequencer = extract_sequencer_step(raw_pipeline)
+        pipeline = load_pipeline(pipeline_path)
 
         train_df = pd.read_csv(train_path)
         test_df = pd.read_csv(test_path)
@@ -353,19 +358,53 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
                 if null_cols:
                     test_df = test_df.dropna(subset=null_cols).reset_index(drop=True)
 
-        # Preserve sequencer helper columns (sortlook, datetime) before transform
-        # because pipeline steps like OneHotEncoder and DateSpliter destroy them.
-        seq_helper_cols = {}
-        if sequencer is not None:
-            for attr in ('sortlook', 'datetime_column'):
-                col = getattr(sequencer, attr, None)
-                if col and isinstance(col, str) and col.strip():
-                    if col in train_df.columns and col not in label_cols:
-                        seq_helper_cols[col] = {
-                            'train': train_df[col].reset_index(drop=True),
-                            'test': test_df[col].reset_index(drop=True) if col in test_df.columns else None,
-                        }
+        os.makedirs(features_path, exist_ok=True)
 
+        # Detect if pipeline contains a sequencer (last step)
+        sequencer = None
+        for name, step in pipeline.steps:
+            if isinstance(step, PipelineSequencer):
+                sequencer = step
+                break
+
+        if sequencer is not None:
+            # Sequence path: pass full DataFrame (including label + helper columns)
+            # through the pipeline. The sequencer's transform() handles grouping,
+            # sorting, windowing, and produces a 3D array. Labels are extracted
+            # and stored in sequencer.last_y_.
+            X_train_seq = pipeline.transform(train_df)
+            y_train = sequencer.last_y_
+
+            X_test_seq = pipeline.transform(test_df)
+            y_test = sequencer.last_y_
+
+            prefix = f"fold_{fold}" if fold != 'simple' else "simple"
+            X_train_path = os.path.join(features_path, f"train_{prefix}_X.npy")
+            y_train_path = os.path.join(features_path, f"train_{prefix}_y.npy")
+            X_test_path = os.path.join(features_path, f"test_{prefix}_X.npy")
+            y_test_path = os.path.join(features_path, f"test_{prefix}_y.npy")
+
+            np.save(X_train_path, X_train_seq)
+            np.save(y_train_path, y_train)
+            np.save(X_test_path, X_test_seq)
+            np.save(y_test_path, y_test)
+
+            print(f"{exp_prefix}  Saved sequences: {X_train_path} (shape: {X_train_seq.shape})")
+            print(f"{exp_prefix}  Saved sequences: {X_test_path} (shape: {X_test_seq.shape})")
+
+            return {
+                'fold': fold,
+                'train_output': X_train_path,
+                'test_output': X_test_path,
+                'train_y_path': y_train_path,
+                'test_y_path': y_test_path,
+                'train_shape': list(X_train_seq.shape),
+                'test_shape': list(X_test_seq.shape),
+                'data_format': 'npy',
+                'sequence_length': sequencer.sequence_length
+            }
+
+        # Non-sequence path: transform features only, save as CSV
         X_train = train_df[[col for col in train_df.columns if col not in label_cols]]
         y_train = train_df[label_cols] if label_cols else None
 
@@ -389,41 +428,6 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
         else:
             test_transformed = X_test_transformed
 
-        # Re-attach sequencer helper columns so sequence_to_disk can group/sort
-        for col, saved in seq_helper_cols.items():
-            if col not in train_transformed.columns:
-                train_transformed[col] = saved['train'].values
-            if saved['test'] is not None and col not in test_transformed.columns:
-                test_transformed[col] = saved['test'].values
-
-        os.makedirs(features_path, exist_ok=True)
-
-        # If sequencer is configured, stream sequences to disk as .npy
-        if sequencer is not None:
-            label_col = label_cols[0]
-            prefix = f"fold_{fold}" if fold != 'simple' else "simple"
-
-            train_meta = sequencer.sequence_to_disk(
-                train_transformed, label_col, features_path, f"train_{prefix}")
-            test_meta = sequencer.sequence_to_disk(
-                test_transformed, label_col, features_path, f"test_{prefix}")
-
-            print(f"{exp_prefix}  Saved sequences: {train_meta['X_path']} (shape: {train_meta['shape']})")
-            print(f"{exp_prefix}  Saved sequences: {test_meta['X_path']} (shape: {test_meta['shape']})")
-
-            return {
-                'fold': fold,
-                'train_output': train_meta['X_path'],
-                'test_output': test_meta['X_path'],
-                'train_y_path': train_meta['y_path'],
-                'test_y_path': test_meta['y_path'],
-                'train_shape': train_meta['shape'],
-                'test_shape': test_meta['shape'],
-                'data_format': 'npy',
-                'sequence_length': sequencer.sequence_length
-            }
-
-        # No sequencer: save as CSV (original behavior)
         if fold == 'simple':
             train_output = os.path.join(features_path, "train_transformed.csv")
             test_output = os.path.join(features_path, "test_transformed.csv")

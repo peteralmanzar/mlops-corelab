@@ -982,7 +982,7 @@ def _model_register(config, experiment_name: Optional[str] = None):
         combined_run_id = logger.get_run_id()
         logger.end_run(status='FINISHED')
 
-        combined_model_uri = f"runs:/{combined_run_id}/combined_model"
+        combined_model_uri = f"runs:/{combined_run_id}/preprocessed_model"
 
         # Use experiment-scoped model name
         promotion_config = getattr(config, 'PROMOTION', {})
@@ -1089,6 +1089,13 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         print(f"{exp_prefix}Loading validation sample from: {sample_path}")
         sample_df = pd.read_csv(sample_path)
         sample_size = config.MODEL.get("VALIDATION_SAMPLE_SIZE", 100)
+        # For sequence models, ensure enough rows for at least a few sequences per group
+        seq_spec = config.PREPROCESSING.get('PIPELINE_SPEC', {}) if isinstance(getattr(config, 'PREPROCESSING', None), dict) else {}
+        for _s in seq_spec.get('steps', []):
+            if isinstance(_s, dict) and next(iter(_s.keys()), None) in ('sequencer', 'sequence'):
+                _seq_len = (_s[next(iter(_s.keys()))] or {}).get('sequence_length', 60)
+                sample_size = max(sample_size, _seq_len * 5)
+                break
         sample_df = sample_df.head(sample_size)
 
         label_cols = config.MODEL.get("LABEL_COLUMNS", ["target"])
@@ -1113,6 +1120,10 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
 
         try:
             start = datetime.now()
+            # The combined pipeline handles both sequence and non-sequence models
+            # end-to-end. For sequence models, the PipelineSequencer inside the
+            # preprocessing pipeline does grouping, sorting, and windowing in
+            # its transform(). For non-sequence models, it's a standard 2D flow.
             preds = combined_pipeline.transform(X_sample)
             duration = (datetime.now() - start).total_seconds()
         except Exception as e:
