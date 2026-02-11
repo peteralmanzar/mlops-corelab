@@ -104,7 +104,7 @@ Builds and applies a sklearn preprocessing pipeline to all data splits.
 | `onehot` | One-hot encode categorical features |
 | `drop` | Remove unwanted columns |
 | `index` | Set dataframe index |
-| `sequencer` | Create sequences for time series models |
+| `sliding_window` | Create sliding windows for time series models |
 
 ### DAG 03: Model Training
 

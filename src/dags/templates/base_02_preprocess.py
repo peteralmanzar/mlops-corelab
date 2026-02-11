@@ -32,8 +32,8 @@ from airflow.sdk import task
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
 from config_load import Config, get_runtime_config
 from mlflow_log import MLFlowLogger
-from data_pipeline import build_pipeline, save_pipeline, load_pipeline, extract_sequencer_step
-from data_transform import PipelineSequencer
+from data_pipeline import build_pipeline, save_pipeline, load_pipeline, extract_sliding_window_step
+from data_transform import PipelineSlidingWindow
 
 
 def _get_experiment_assets(experiment_name: str):
@@ -385,23 +385,23 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
 
         os.makedirs(features_path, exist_ok=True)
 
-        # Detect if pipeline contains a sequencer (last step)
-        sequencer = None
+        # Detect if pipeline contains a sliding window step (last step)
+        sliding_window = None
         for name, step in pipeline.steps:
-            if isinstance(step, PipelineSequencer):
-                sequencer = step
+            if isinstance(step, PipelineSlidingWindow):
+                sliding_window = step
                 break
 
-        if sequencer is not None:
-            # Sequence path: pass full DataFrame (including label + helper columns)
-            # through the pipeline. The sequencer's transform() handles grouping,
+        if sliding_window is not None:
+            # Sliding window path: pass full DataFrame (including label + helper columns)
+            # through the pipeline. The sliding window's transform() handles grouping,
             # sorting, windowing, and produces a 3D array. Labels are extracted
-            # and stored in sequencer.last_y_.
+            # and stored in sliding_window.last_y_.
             X_train_seq = pipeline.transform(train_df)
-            y_train = sequencer.last_y_
+            y_train = sliding_window.last_y_
 
             X_test_seq = pipeline.transform(test_df)
-            y_test = sequencer.last_y_
+            y_test = sliding_window.last_y_
 
             prefix = f"fold_{fold}" if fold != 'simple' else "simple"
             X_train_path = os.path.join(features_path, f"train_{prefix}_X.npy")
@@ -426,7 +426,7 @@ def _create_split_transform_task(config, experiment_name: Optional[str] = None):
                 'train_shape': list(X_train_seq.shape),
                 'test_shape': list(X_test_seq.shape),
                 'data_format': 'npy',
-                'sequence_length': sequencer.sequence_length
+                'sequence_length': sliding_window.sequence_length
             }
 
         # Non-sequence path: transform features only, save as CSV
@@ -529,7 +529,7 @@ def _validate_transformed_data(config, experiment_name: Optional[str] = None):
 
         files_to_validate = []
 
-        # Determine whether sequencer produced .npy files or pipeline produced .csv
+        # Determine whether sliding window produced .npy files or pipeline produced .csv
         def _resolve_path(base_name):
             """Return (path, format) trying .npy first, then .csv."""
             npy_path = os.path.join(features_path, f"{base_name}_X.npy")

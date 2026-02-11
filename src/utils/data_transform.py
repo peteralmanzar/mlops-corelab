@@ -387,9 +387,9 @@ class PipelineIndexSetter(BaseEstimator, TransformerMixin):
             return X_out
         return X_out.set_index(self.index)
 
-class PipelineSequencer(BaseEstimator, TransformerMixin):
+class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
     """
-    PipelineSequencer is a custom transformer that creates sequences from a DataFrame.
+    PipelineSlidingWindow is a custom transformer that creates sliding windows from a DataFrame.
     It takes a column to use as the label and a sequence length as parameters.
 
     Parameters
@@ -397,15 +397,15 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
     column : str
         A column name to use as the label.
     sequence_length : int
-        The length of the sequence to create.
+        The length of the sliding window to create.
     sortlook : str, optional
-        A column name to group by before creating sequences. When set,
-        the data is grouped by this column and sequences are created
-        within each group independently (sequences do not cross group
+        A column name to group by before creating sliding windows. When set,
+        the data is grouped by this column and windows are created
+        within each group independently (windows do not cross group
         boundaries). When None, the entire dataset is treated as one group.
     datetime_column : str, optional
         A column name containing datetime values used to sort the data
-        chronologically before creating sequences. When set alongside
+        chronologically before creating sliding windows. When set alongside
         ``sortlook``, data is sorted within each group. When None, the
         existing row order is preserved.
 
@@ -429,11 +429,11 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
             and self.datetime_column in data.columns
         )
 
-    def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSequencer':
+    def fit(self, X: DataFrame, y: Union[DataFrame, None] = None) -> 'PipelineSlidingWindow':
         return self
 
     def transform(self, X: DataFrame) -> np.ndarray:
-        """In-memory (or memmap-backed) sequencing.
+        """In-memory (or memmap-backed) sliding window creation.
 
         Groups by ``sortlook``, sorts by ``datetime_column``, builds sliding
         windows of ``sequence_length``, and returns a 3-D numpy array
@@ -448,7 +448,7 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         label column is absent (inference) ``self.last_y_`` is set to None.
         """
         if X is None:
-            raise ValueError("Input X cannot be None for PipelineSequencer.transform")
+            raise ValueError("Input X cannot be None for PipelineSlidingWindow.transform")
 
         # Determine which columns are features vs helpers/label
         exclude_cols = set()
@@ -498,7 +498,7 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         if estimated_bytes > MEMMAP_THRESHOLD:
             import tempfile
             self._memmap_path = os.path.join(
-                tempfile.gettempdir(), f"seq_{id(self)}_{os.getpid()}.npy")
+                tempfile.gettempdir(), f"sw_{id(self)}_{os.getpid()}.npy")
             X_arr = np.lib.format.open_memmap(
                 self._memmap_path, dtype='float32', mode='w+',
                 shape=(total, seq_len, num_features))
@@ -522,7 +522,7 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
                 labels = gdf[self.column].values.astype(np.float32)
                 y_arr[idx:idx + n] = labels[offsets + seq_len]
             idx += n
-            logger.info("Sequenced group %s: %d sequences", key, n)
+            logger.info("Windowed group %s: %d windows", key, n)
 
         if isinstance(X_arr, np.memmap):
             X_arr.flush()
@@ -530,12 +530,12 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
         self.last_y_ = y_arr
         return X_arr
 
-    def sequence_to_disk(self, data: DataFrame, label_column: str,
+    def to_disk(self, data: DataFrame, label_column: str,
                          output_dir: str, prefix: str,
                          batch_size: int = 5000) -> dict:
-        """Stream sequences to disk without holding all in memory.
+        """Stream sliding windows to disk without holding all in memory.
 
-        Uses numpy memmap to write sequences directly to disk in chunks,
+        Uses numpy memmap to write sliding windows directly to disk in chunks,
         keeping memory bounded regardless of dataset size.
 
         Args:
@@ -619,7 +619,7 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
                 y_arr[global_idx:global_idx + len(offsets)] = group_labels[offsets + seq_len]
                 global_idx += len(offsets)
 
-            logger.info("Sequenced group %s: %d sequences", key, n_seq)
+            logger.info("Windowed group %s: %d windows", key, n_seq)
 
         X_mmap.flush()
         del X_mmap
@@ -627,7 +627,7 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
 
         shape = (total_sequences, seq_len, num_features)
         logger.info(
-            "Saved sequences to %s — X shape: %s, y shape: (%d,)",
+            "Saved sliding windows to %s — X shape: %s, y shape: (%d,)",
             output_dir, shape, total_sequences
         )
 
@@ -639,10 +639,10 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
             'sequence_length': seq_len,
         }
 
-    def create_sequences(self, data: DataFrame) -> Tuple[List[DataFrame], DataFrame]:
+    def create_windows(self, data: DataFrame) -> Tuple[List[DataFrame], DataFrame]:
         if self.sortlook and isinstance(self.sortlook, str) and self.sortlook.strip() and self.sortlook in data.columns:
-            sequencedX = []
-            sequencedy = []
+            windowed_X = []
+            windowed_y = []
             for _, group_df in data.groupby(self.sortlook, sort=False):
                 if self._has_datetime_column(group_df):
                     group_df = group_df.copy()
@@ -650,23 +650,27 @@ class PipelineSequencer(BaseEstimator, TransformerMixin):
                     group_df = group_df.sort_values(by=self.datetime_column)
                 group_df = group_df.reset_index(drop=True)
                 for i in range(self.sequence_length, len(group_df)):
-                    sequence_df = group_df.iloc[i - self.sequence_length:i].copy()
-                    sequencedX.append(sequence_df)
-                    sequencedy.append(group_df.iloc[i][self.column])
-            label_df = pd.DataFrame(sequencedy, columns=['label'])
-            return sequencedX, label_df
+                    window_df = group_df.iloc[i - self.sequence_length:i].copy()
+                    windowed_X.append(window_df)
+                    windowed_y.append(group_df.iloc[i][self.column])
+            label_df = pd.DataFrame(windowed_y, columns=['label'])
+            return windowed_X, label_df
 
         if self._has_datetime_column(data):
             data = data.copy()
             data[self.datetime_column] = pd.to_datetime(data[self.datetime_column], errors='coerce')
             data = data.sort_values(by=self.datetime_column).reset_index(drop=True)
 
-        sequencedX = []
-        sequencedy = []
+        windowed_X = []
+        windowed_y = []
         for i in range(self.sequence_length, len(data)):
-            sequence_df = data.iloc[i-self.sequence_length:i].copy()
-            sequencedX.append(sequence_df)
-            sequencedy.append(data.iloc[i][self.column])
+            window_df = data.iloc[i-self.sequence_length:i].copy()
+            windowed_X.append(window_df)
+            windowed_y.append(data.iloc[i][self.column])
 
-        label_df = pd.DataFrame(sequencedy, columns=['label'])
-        return sequencedX, label_df
+        label_df = pd.DataFrame(windowed_y, columns=['label'])
+        return windowed_X, label_df
+
+# Backwards-compatibility alias for deserialization of models serialized
+# before the rename.  Deprecated — do not use in new code.
+PipelineSequencer = PipelineSlidingWindow

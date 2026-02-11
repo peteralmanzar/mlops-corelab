@@ -154,20 +154,20 @@
                             </div>
                             <div class="row mb-3">
                                 <div class="col">
-                                    <label class="form-label">Sequencer Column</label>
-                                    <input type="text" class="form-control" @bind="Sequencer.Column" />
+                                    <label class="form-label">Sliding Window Column</label>
+                                    <input type="text" class="form-control" @bind="SlidingWindow.Column" />
                                 </div>
                                 <div class="col">
                                     <label class="form-label">Sequence Length</label>
-                                    <input type="number" class="form-control" @bind="Sequencer.SequenceLength" />
+                                    <input type="number" class="form-control" @bind="SlidingWindow.SequenceLength" />
                                 </div>
                                 <div class="col">
                                     <label class="form-label">Group By (sortlook)</label>
-                                    <input type="text" class="form-control" @bind="Sequencer.Sortlook" placeholder="e.g., symbol" />
+                                    <input type="text" class="form-control" @bind="SlidingWindow.Sortlook" placeholder="e.g., symbol" />
                                 </div>
                                 <div class="col">
                                     <label class="form-label">DateTime Column</label>
-                                    <input type="text" class="form-control" @bind="Sequencer.DatetimeColumn" placeholder="e.g., date" />
+                                    <input type="text" class="form-control" @bind="SlidingWindow.DatetimeColumn" placeholder="e.g., date" />
                                 </div>
                             </div>
                         }
@@ -447,7 +447,7 @@
     private DropStep Drop { get; set; } = new();
     private DateSplitStep DateSplit { get; set; } = new();
     private IndexStep Index { get; set; } = new();
-    private SequencerStep Sequencer { get; set; } = new();
+    private SlidingWindowStep SlidingWindow { get; set; } = new();
 
     // Text bindings
     private string ImputerColumnsText
@@ -626,8 +626,8 @@
                 case IndexStep index:
                     Index = index;
                     break;
-                case SequencerStep sequencer:
-                    Sequencer = sequencer;
+                case SlidingWindowStep slidingWindow:
+                    SlidingWindow = slidingWindow;
                     break;
             }
         }
@@ -637,7 +637,7 @@
     {
         var steps = new List<PipelineStep>
         {
-            Imputer, DropNullRows, Scaler, OneHot, Drop, DateSplit, Index, Sequencer
+            Imputer, DropNullRows, Scaler, OneHot, Drop, DateSplit, Index, SlidingWindow
         };
         Config.Preprocessing.PipelineSpec.Steps = steps;
     }

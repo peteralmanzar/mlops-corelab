@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 
 from config_load import Config
 from mlflow_log import MLFlowLogger
-from data_transform import PipelineFeatureDropper, PipelineSequencer
+from data_transform import PipelineFeatureDropper, PipelineSlidingWindow
 from typing import Optional, Dict, Any
 from model_template import (
     GetModelTemplateMLPRegression,
@@ -191,8 +191,8 @@ class ModelBuilder:
         model = MLFlowLogger.load_keras_model(model_uri)
         return model
 
-    def _get_sequencer_helper_columns(self):
-        """Get columns used by the sequencer (sortlook, datetime_column) that
+    def _get_sliding_window_helper_columns(self):
+        """Get columns used by the sliding window (sortlook, datetime_column) that
         should be dropped before the model in a combined inference pipeline."""
         cols = []
         spec = getattr(self.config, 'PREPROCESSING', {})
@@ -204,7 +204,7 @@ class ModelBuilder:
             if not isinstance(step, dict):
                 continue
             key = next(iter(step.keys()), None)
-            if key in ('sequencer', 'sequence'):
+            if key in ('sliding_window', 'sequencer', 'sequence'):
                 cfg = step[key] or {}
                 for field in ('sortlook', 'symbol_column', 'datetime_column', 'datetimeColumn'):
                     val = cfg.get(field)
@@ -222,19 +222,19 @@ class ModelBuilder:
 
         wrapper = KerasModelWrapper(keras_model)
 
-        # Check if preprocessing pipeline already contains a sequencer.
-        # When present, the sequencer's transform() handles dropping helper
+        # Check if preprocessing pipeline already contains a sliding window step.
+        # When present, the sliding window's transform() handles dropping helper
         # columns (sortlook, datetime) and producing 3D input for the model.
-        has_sequencer = any(
-            isinstance(step, PipelineSequencer) for _, step in pipeline.steps
+        has_sliding_window = any(
+            isinstance(step, PipelineSlidingWindow) for _, step in pipeline.steps
         )
 
         steps = [('preprocessing', pipeline)]
-        if not has_sequencer:
+        if not has_sliding_window:
             # Non-sequence models: drop helper columns if any remain
-            sequencer_cols = self._get_sequencer_helper_columns()
-            if sequencer_cols:
-                steps.append(('drop_sequencer_cols', PipelineFeatureDropper(columns=sequencer_cols)))
+            sliding_window_cols = self._get_sliding_window_helper_columns()
+            if sliding_window_cols:
+                steps.append(('drop_sliding_window_cols', PipelineFeatureDropper(columns=sliding_window_cols)))
         steps.append(('model', wrapper))
         combined = Pipeline(steps)
 

@@ -319,52 +319,52 @@
                         </div>
                     </div>
 
-                    <!-- Sequencer -->
+                    <!-- Sliding Window -->
                     <div class="accordion-item">
                         <h2 class="accordion-header">
-                            <button class="accordion-button @(OpenAccordion == "sequencer" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("sequencer"))">
-                                <strong>Sequencer</strong>&nbsp;- Create sequences for time series
-                                @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
+                            <button class="accordion-button @(OpenAccordion == "sliding_window" ? "" : "collapsed")" type="button" @onclick="@(() => ToggleAccordion("sliding_window"))">
+                                <strong>Sliding Window</strong>&nbsp;- Create sliding windows for time series
+                                @if (!string.IsNullOrWhiteSpace(SlidingWindow.Column))
                                 {
                                     <span class="badge bg-success ms-2">
-                                        @Sequencer.Column (len: @Sequencer.SequenceLength)
-                                        @if (!string.IsNullOrWhiteSpace(Sequencer.Sortlook))
+                                        @SlidingWindow.Column (len: @SlidingWindow.SequenceLength)
+                                        @if (!string.IsNullOrWhiteSpace(SlidingWindow.Sortlook))
                                         {
-                                            <text> grouped by @Sequencer.Sortlook</text>
+                                            <text> grouped by @SlidingWindow.Sortlook</text>
                                         }
-                                        @if (!string.IsNullOrWhiteSpace(Sequencer.DatetimeColumn))
+                                        @if (!string.IsNullOrWhiteSpace(SlidingWindow.DatetimeColumn))
                                         {
-                                            <text> sorted by @Sequencer.DatetimeColumn</text>
+                                            <text> sorted by @SlidingWindow.DatetimeColumn</text>
                                         }
                                     </span>
                                 }
                             </button>
                         </h2>
-                        <div class="accordion-collapse @(OpenAccordion == "sequencer" ? "show" : "collapse")">
+                        <div class="accordion-collapse @(OpenAccordion == "sliding_window" ? "show" : "collapse")">
                             <div class="accordion-body">
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Target Column</label>
-                                        <input type="text" class="form-control" @bind="Sequencer.Column" placeholder="e.g., Close" />
+                                        <input type="text" class="form-control" @bind="SlidingWindow.Column" placeholder="e.g., Close" />
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Sequence Length</label>
-                                        <input type="number" class="form-control" @bind="Sequencer.SequenceLength" min="1" max="500" />
+                                        <input type="number" class="form-control" @bind="SlidingWindow.SequenceLength" min="1" max="500" />
                                     </div>
                                 </div>
                                 <div class="row">
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">Group By Column (sortlook)</label>
-                                        <input type="text" class="form-control" @bind="Sequencer.Sortlook" placeholder="e.g., symbol" />
-                                        <div class="form-text">Optional. Group data by this column before creating sequences.</div>
+                                        <input type="text" class="form-control" @bind="SlidingWindow.Sortlook" placeholder="e.g., symbol" />
+                                        <div class="form-text">Optional. Group data by this column before creating sliding windows.</div>
                                     </div>
                                     <div class="col-md-6 mb-3">
                                         <label class="form-label">DateTime Column</label>
-                                        <input type="text" class="form-control" @bind="Sequencer.DatetimeColumn" placeholder="e.g., date" />
-                                        <div class="form-text">Optional. Sort data chronologically by this column before creating sequences.</div>
+                                        <input type="text" class="form-control" @bind="SlidingWindow.DatetimeColumn" placeholder="e.g., date" />
+                                        <div class="form-text">Optional. Sort data chronologically by this column before creating sliding windows.</div>
                                     </div>
                                 </div>
-                                <div class="form-text">Creates sliding window sequences for LSTM/RNN models</div>
+                                <div class="form-text">Creates sliding windows for LSTM/RNN models</div>
                             </div>
                         </div>
                     </div>
@@ -616,13 +616,13 @@
                             {
                                 <li class="list-group-item py-1">Index: @Index.Column</li>
                             }
-                            @if (!string.IsNullOrWhiteSpace(Sequencer.Column))
+                            @if (!string.IsNullOrWhiteSpace(SlidingWindow.Column))
                             {
                                 <li class="list-group-item py-1">
-                                    Sequencer: @Sequencer.Column (len: @Sequencer.SequenceLength)
-                                    @if (!string.IsNullOrWhiteSpace(Sequencer.Sortlook))
+                                    Sliding Window: @SlidingWindow.Column (len: @SlidingWindow.SequenceLength)
+                                    @if (!string.IsNullOrWhiteSpace(SlidingWindow.Sortlook))
                                     {
-                                        <text> grouped by @Sequencer.Sortlook</text>
+                                        <text> grouped by @SlidingWindow.Sortlook</text>
                                     }
                                 </li>
                             }
@@ -721,7 +721,7 @@
     private DropStep Drop { get; set; } = new();
     private DateSplitStep DateSplit { get; set; } = new();
     private IndexStep Index { get; set; } = new();
-    private SequencerStep Sequencer { get; set; } = new();
+    private SlidingWindowStep SlidingWindow { get; set; } = new();
 
     // Accordion state - which panel is open (null = none)
     private string? OpenAccordion { get; set; }
@@ -950,7 +950,7 @@
         steps.Add(Drop);
         steps.Add(DateSplit);
         steps.Add(Index);
-        steps.Add(Sequencer);
+        steps.Add(SlidingWindow);
 
         Config.Preprocessing.PipelineSpec.Steps = steps;
     }
@@ -1175,7 +1175,7 @@
         Drop = new DropStep();
         DateSplit = new DateSplitStep();
         Index = new IndexStep();
-        Sequencer = new SequencerStep();
+        SlidingWindow = new SlidingWindowStep();
 
         // Populate from imported config
         if (Config.Preprocessing?.PipelineSpec?.Steps != null)
@@ -1205,8 +1205,8 @@
                     case IndexStep index:
                         Index = index;
                         break;
-                    case SequencerStep sequencer:
-                        Sequencer = sequencer;
+                    case SlidingWindowStep slidingWindow:
+                        SlidingWindow = slidingWindow;
                         break;
                 }
             }

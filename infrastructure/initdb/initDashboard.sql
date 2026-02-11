@@ -68,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_experiment_templates_template_type ON experiment_
 --   drop:      {"columns": [...]}
 --   dateSplit: {"columns": [...], "dropColumns": true}
 --   index:     {"column": "col_name"}
---   sequencer: {"column": "col_name", "sequence_length": 60}
+--   sliding_window: {"column": "col_name", "sequence_length": 60}
 INSERT INTO experiment_templates (name, description, template_type, default_config)
 VALUES (
     'baseline_template',

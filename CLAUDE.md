@@ -41,8 +41,8 @@ A 5th DAG (`base_05_dag_reload_serve.py`) hot-reloads champion models in the Fas
 | File | Purpose |
 |------|---------|
 | `config_load.py` | Two-tier config: merges `src/config.model.json` (defaults) with experiment overrides |
-| `data_pipeline.py` | Builds sklearn Pipeline from JSON spec; `extract_sequencer_step()` removes sequencer at runtime |
-| `data_transform.py` | Custom sklearn transformers: imputer, scaler, onehot, dateSplit, dropNullRows, drop, index, sequencer |
+| `data_pipeline.py` | Builds sklearn Pipeline from JSON spec; `extract_sliding_window_step()` removes sliding window at runtime |
+| `data_transform.py` | Custom sklearn transformers: imputer, scaler, onehot, dateSplit, dropNullRows, drop, index, sliding_window |
 | `model_template.py` | Keras architecture templates (MLP, LSTM, 1D-CNN) with dynamic builders for Optuna |
 | `model_builder.py` | Selects model template based on task_type + sequence_length; combines preprocessing + model into single Pipeline |
 | `mlflow_log.py` | MLflow wrapper for logging params, metrics, artifacts, and model registry operations |
@@ -72,7 +72,7 @@ File naming conventions:
 ## Critical Patterns
 
 - **Airflow 3.1.6 imports**: Use `from airflow.sdk import task` — `airflow.sdk.task` is an attribute, NOT a submodule
-- **Sequencer extraction**: `PipelineSequencer` cannot live inside sklearn Pipeline (2D→3D mismatch). It is extracted via `extract_sequencer_step()` and run as a post-step that streams to disk with numpy memmap
+- **Sliding window extraction**: `PipelineSlidingWindow` cannot live inside sklearn Pipeline (2D→3D mismatch). It is extracted via `extract_sliding_window_step()` and run as a post-step that streams to disk with numpy memmap
 - **Combined model pipeline**: After training, preprocessing pipeline + Keras model are bundled into a single sklearn Pipeline via `combine_pipeline_and_model()` for serving
 - **Invocation ID**: Each pipeline run generates a unique ID (`YYYYMMdd_HHMMSS_8char-UUID`) propagated across all DAGs via XCom for traceability
 - **Task type auto-detection**: Target column unique values determine binary classification (2), multi-class (>2, <20 integers), or regression

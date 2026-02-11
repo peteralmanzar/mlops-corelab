@@ -1119,7 +1119,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         # For sequence models, ensure enough rows for at least a few sequences per group
         seq_spec = runtime_config.PREPROCESSING.get('PIPELINE_SPEC', {}) if isinstance(getattr(runtime_config, 'PREPROCESSING', None), dict) else {}
         for _s in seq_spec.get('steps', []):
-            if isinstance(_s, dict) and next(iter(_s.keys()), None) in ('sequencer', 'sequence'):
+            if isinstance(_s, dict) and next(iter(_s.keys()), None) in ('sliding_window', 'sequencer', 'sequence'):
                 _seq_len = (_s[next(iter(_s.keys()))] or {}).get('sequence_length', 60)
                 sample_size = max(sample_size, _seq_len * 5)
                 break
@@ -1148,7 +1148,7 @@ def _validate_registered_model(config, experiment_name: Optional[str] = None):
         try:
             start = datetime.now()
             # The combined pipeline handles both sequence and non-sequence models
-            # end-to-end. For sequence models, the PipelineSequencer inside the
+            # end-to-end. For sequence models, the PipelineSlidingWindow inside the
             # preprocessing pipeline does grouping, sorting, and windowing in
             # its transform(). For non-sequence models, it's a standard 2D flow.
             preds = combined_pipeline.transform(X_sample)

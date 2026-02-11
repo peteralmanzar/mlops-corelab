@@ -201,7 +201,7 @@ Preprocessing pipeline configuration.
       {"onehot": {"columns": ["Sex"]}},
       {"drop": {"columns": ["PassengerId", "Name", "Ticket", "Cabin", "Embarked"]}},
       {"index": {"column": ""}},
-      {"sequencer": {"column": "", "sequence_length": 60}}
+      {"sliding_window": {"column": "", "sequence_length": 60}}
     ]
   }
 }
@@ -313,19 +313,19 @@ Sets a column as the dataframe index.
 |-----------|------|---------|-------------|
 | `column` | string | `""` | Column to use as index (empty string to skip) |
 
-#### sequencer
+#### sliding_window
 
-Creates sequences for time series / sequence models.
+Creates sliding windows for time series / sequence models.
 
 ```json
-{"sequencer": {"column": "value", "sequence_length": 60, "sortlook": "symbol", "datetime_column": "date"}}
+{"sliding_window": {"column": "value", "sequence_length": 60, "sortlook": "symbol", "datetime_column": "date"}}
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `column` | string | `""` | Column to create sequences from (empty to skip) |
-| `sequence_length` | integer | `60` | Number of timesteps per sequence |
-| `sortlook` | string | `""` | Optional. Group data by this column before creating sequences (e.g., `"symbol"`). Sequences never cross group boundaries. |
+| `column` | string | `""` | Column to create sliding windows from (empty to skip) |
+| `sequence_length` | integer | `60` | Number of timesteps per window |
+| `sortlook` | string | `""` | Optional. Group data by this column before creating sliding windows (e.g., `"symbol"`). Windows never cross group boundaries. |
 | `datetime_column` | string | `""` | Optional. Sort data (or each group) chronologically by this column before windowing. The column is kept in the output. |
 
 ---
@@ -498,7 +498,7 @@ Common metrics for `COMPARISON_METRIC`:
       "steps": [
         {"dateSplit": {"columns": ["date"], "dropColumns": true}},
         {"scaler": {"columns": ["open", "high", "low", "close", "volume"]}},
-        {"sequencer": {"column": "close", "sequence_length": 30}}
+        {"sliding_window": {"column": "close", "sequence_length": 30}}
       ]
     }
   },

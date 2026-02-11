@@ -15,7 +15,8 @@ from .data_transform import (
 	DatasplitToNumpyArray,
 	PipelineDateSpliter,
 	PipelineIndexSetter,
-	PipelineSequencer,
+	PipelineSlidingWindow,
+	PipelineSequencer,  # Deprecated alias — use PipelineSlidingWindow
 )
 from .data_pipeline import build_pipeline, save_pipeline, load_pipeline
 from .mlflow_log import MLFlowLogger
@@ -32,7 +33,8 @@ __all__ = [
 	"DatasplitToNumpyArray",
 	"PipelineDateSpliter",
 	"PipelineIndexSetter",
-	"PipelineSequencer",
+	"PipelineSlidingWindow",
+	"PipelineSequencer",  # Deprecated alias
 	"build_pipeline",
 	"save_pipeline",
 	"load_pipeline",

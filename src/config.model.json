@@ -37,7 +37,7 @@
         {"onehot": {"columns": []}},
         {"drop": {"columns": []}},
         {"index": {"column": ""}},
-        {"sequencer": {"column": "", "sequence_length": 60, "sortlook": "", "datetime_column": ""}}
+        {"sliding_window": {"column": "", "sequence_length": 60, "sortlook": "", "datetime_column": ""}}
       ]
     }
   },
