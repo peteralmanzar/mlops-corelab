@@ -280,7 +280,7 @@ def _pipeline_build(config, experiment_name: Optional[str] = None):
                 source=train_path,
                 name="pipeline_training_data",
                 context="pipeline_fit",
-                targets=",".join(label_cols)
+                targets=label_cols[0] if isinstance(label_cols, list) else label_cols
             )
 
             pipeline_params = {
@@ -742,13 +742,15 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
 
         exp_prefix = f"[{experiment_name}] " if experiment_name else ""
 
+        # Resolve the actual output format (.npy for sliding window, .csv otherwise)
         if metadata['split_type'] == 'simple':
-            train_path = os.path.join(features_path, "train_transformed.csv")
+            base_name = "train_simple"
         else:
-            train_path = os.path.join(features_path, "train_fold_0_transformed.csv")
+            base_name = "train_fold_0"
 
-        print(f"{exp_prefix}Performing EDA on preprocessed data: {train_path}")
-        df = pd.read_csv(train_path)
+        npy_path = os.path.join(features_path, f"{base_name}_X.npy")
+        csv_path = os.path.join(features_path, f"{base_name}_transformed.csv")
+        is_npy = os.path.exists(npy_path)
 
         mlflow_tracking_uri = runtime_config.MLFLOW.get("TRACKING_URI")
         mlflow_experiment_name = runtime_config.MLFLOW.get("EXPERIMENT_NAME")
@@ -782,117 +784,181 @@ def _preprocessed_eda(config, experiment_name: Optional[str] = None):
         try:
             logger.start_run(run_name=run_name, tags=tags)
 
-            label_cols_str = ",".join(runtime_config.MODEL.get("LABEL_COLUMNS", ["target"]))
-            logger.log_dataset(
-                df=df,
-                source=train_path,
-                name="preprocessed_train_data",
-                context="preprocessed",
-                targets=label_cols_str
-            )
+            if is_npy:
+                # Sliding window output — load numpy arrays for shape-based EDA
+                train_path = npy_path
+                y_path = os.path.join(features_path, f"{base_name}_y.npy")
+                print(f"{exp_prefix}Performing EDA on preprocessed .npy data: {train_path}")
 
-            logger.log_dataset_info(df, dataset_name="preprocessed_train")
+                X = np.load(train_path, allow_pickle=True)
+                y = np.load(y_path, allow_pickle=True) if os.path.exists(y_path) else None
 
-            label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
-            feature_cols = [col for col in df.columns if col not in label_cols]
+                metrics = {
+                    "total_windows": X.shape[0],
+                    "sequence_length": X.shape[1],
+                    "num_features": X.shape[2],
+                }
+                if y is not None:
+                    unique_labels = np.unique(y)
+                    metrics["num_labels"] = len(unique_labels)
+                    metrics["label_min"] = float(np.min(y))
+                    metrics["label_max"] = float(np.max(y))
 
-            numeric_cols = df[feature_cols].select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
-            categorical_cols = df[feature_cols].select_dtypes(include=['object', 'category']).columns.tolist()
-
-            metrics = {
-                "total_rows": len(df),
-                "total_columns": len(df.columns),
-                "feature_columns": len(feature_cols),
-                "numeric_features": len(numeric_cols),
-                "categorical_features": len(categorical_cols),
-                "total_missing_values": int(df.isna().sum().sum()),
-                "missing_percentage": round((df.isna().sum().sum() / (len(df) * len(df.columns))) * 100, 2)
-            }
-
-            logger.log_metrics(metrics)
-            logger.log_params({
-                "features": ",".join(feature_cols[:50]),
-                "numeric_features": ",".join(numeric_cols[:50]),
-                "categorical_features": ",".join(categorical_cols[:50])
-            })
-
-            # Create correlation heatmap
-            heatmap_cols = numeric_cols.copy()
-            for label_col in label_cols:
-                if label_col in df.columns and label_col not in heatmap_cols:
-                    if pd.api.types.is_numeric_dtype(df[label_col]):
-                        heatmap_cols.append(label_col)
-
-            if len(heatmap_cols) > 1:
-                print(f"{exp_prefix}Creating correlation heatmap for {len(heatmap_cols)} columns...")
-
-                corr_matrix = df[heatmap_cols].corr()
-
-                fig, ax = plt.subplots(figsize=(12, 10))
-
-                sns.heatmap(
-                    corr_matrix,
-                    annot=len(heatmap_cols) <= 20,
-                    fmt='.2f',
-                    cmap='coolwarm',
-                    center=0,
-                    square=True,
-                    linewidths=0.5,
-                    cbar_kws={"shrink": 0.8},
-                    ax=ax
-                )
-
-                ax.set_title('Feature Correlation Heatmap (Preprocessed Data)', fontsize=14, pad=20)
-                fig.tight_layout()
-
-                mlflow.log_figure(fig, "visualizations/correlation_heatmap.png")
-                plt.close(fig)
-
-                corr_flat = corr_matrix.values[np.triu_indices_from(corr_matrix.values, k=1)]
-                logger.log_metrics({
-                    "correlation_mean": float(np.mean(np.abs(corr_flat))),
-                    "correlation_max": float(np.max(np.abs(corr_flat))),
-                    "correlation_min": float(np.min(np.abs(corr_flat))),
-                    "high_correlation_pairs": int(np.sum(np.abs(corr_flat) > 0.8))
+                logger.log_metrics(metrics)
+                logger.log_params({
+                    "output_format": "npy",
+                    "data_format": "npy_sliding_window",
+                    "X_shape": str(X.shape),
+                    "y_shape": str(y.shape) if y is not None else "N/A",
                 })
 
-                corr_csv_path = os.path.join(features_path, "correlation_matrix.csv")
-                corr_matrix.to_csv(corr_csv_path)
-                logger.log_artifact(corr_csv_path, "correlations")
+                summary_lines = [
+                    "=" * 60,
+                    f"PREPROCESSED DATA EDA SUMMARY {f'({experiment_name})' if experiment_name else ''}",
+                    "=" * 60,
+                    f"Dataset: {train_path}",
+                    f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"Split Type: {metadata['split_type']}",
+                    f"Output Format: .npy (sliding window)",
+                    "",
+                    "DATASET OVERVIEW:",
+                    f"  - Total Windows: {X.shape[0]:,}",
+                    f"  - Sequence Length: {X.shape[1]}",
+                    f"  - Features per Step: {X.shape[2]}",
+                ]
+                if y is not None:
+                    summary_lines += [
+                        f"  - Unique Labels: {len(unique_labels)}",
+                        f"  - Label Range: [{np.min(y)}, {np.max(y)}]",
+                    ]
+                summary_lines.append("=" * 60)
 
-            summary_lines = [
-                "=" * 60,
-                f"PREPROCESSED DATA EDA SUMMARY {f'({experiment_name})' if experiment_name else ''}",
-                "=" * 60,
-                f"Dataset: {train_path}",
-                f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                f"Split Type: {metadata['split_type']}",
-                "",
-                "DATASET OVERVIEW:",
-                f"  - Total Rows: {len(df):,}",
-                f"  - Total Columns: {len(df.columns)}",
-                f"  - Feature Columns: {len(feature_cols)}",
-                f"  - Numeric Features: {len(numeric_cols)}",
-                f"  - Categorical Features: {len(categorical_cols)}",
-                "",
-                "DATA QUALITY:",
-                f"  - Total Missing Values: {int(df.isna().sum().sum()):,}",
-                f"  - Missing Percentage: {metrics['missing_percentage']}%",
-                "=" * 60
-            ]
+                eda_summary = {
+                    'run_id': logger.get_run_id(),
+                    'total_rows': int(X.shape[0]),
+                    'feature_columns': int(X.shape[2]),
+                    'numeric_features': int(X.shape[2]),
+                    'categorical_features': 0
+                }
+
+            else:
+                # CSV output — full DataFrame-based EDA
+                train_path = csv_path
+                print(f"{exp_prefix}Performing EDA on preprocessed data: {train_path}")
+                df = pd.read_csv(train_path)
+
+                label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
+                logger.log_dataset(
+                    df=df,
+                    source=train_path,
+                    name="preprocessed_train_data",
+                    context="preprocessed",
+                    targets=label_cols[0] if isinstance(label_cols, list) else label_cols
+                )
+
+                logger.log_dataset_info(df, dataset_name="preprocessed_train")
+
+                feature_cols = [col for col in df.columns if col not in label_cols]
+
+                numeric_cols = df[feature_cols].select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns.tolist()
+                categorical_cols = df[feature_cols].select_dtypes(include=['object', 'category']).columns.tolist()
+
+                metrics = {
+                    "total_rows": len(df),
+                    "total_columns": len(df.columns),
+                    "feature_columns": len(feature_cols),
+                    "numeric_features": len(numeric_cols),
+                    "categorical_features": len(categorical_cols),
+                    "total_missing_values": int(df.isna().sum().sum()),
+                    "missing_percentage": round((df.isna().sum().sum() / (len(df) * len(df.columns))) * 100, 2)
+                }
+
+                logger.log_metrics(metrics)
+                logger.log_params({
+                    "features": ",".join(feature_cols[:50]),
+                    "numeric_features": ",".join(numeric_cols[:50]),
+                    "categorical_features": ",".join(categorical_cols[:50])
+                })
+
+                # Create correlation heatmap
+                heatmap_cols = numeric_cols.copy()
+                for label_col in label_cols:
+                    if label_col in df.columns and label_col not in heatmap_cols:
+                        if pd.api.types.is_numeric_dtype(df[label_col]):
+                            heatmap_cols.append(label_col)
+
+                if len(heatmap_cols) > 1:
+                    print(f"{exp_prefix}Creating correlation heatmap for {len(heatmap_cols)} columns...")
+
+                    corr_matrix = df[heatmap_cols].corr()
+
+                    fig, ax = plt.subplots(figsize=(12, 10))
+
+                    sns.heatmap(
+                        corr_matrix,
+                        annot=len(heatmap_cols) <= 20,
+                        fmt='.2f',
+                        cmap='coolwarm',
+                        center=0,
+                        square=True,
+                        linewidths=0.5,
+                        cbar_kws={"shrink": 0.8},
+                        ax=ax
+                    )
+
+                    ax.set_title('Feature Correlation Heatmap (Preprocessed Data)', fontsize=14, pad=20)
+                    fig.tight_layout()
+
+                    mlflow.log_figure(fig, "visualizations/correlation_heatmap.png")
+                    plt.close(fig)
+
+                    corr_flat = corr_matrix.values[np.triu_indices_from(corr_matrix.values, k=1)]
+                    logger.log_metrics({
+                        "correlation_mean": float(np.mean(np.abs(corr_flat))),
+                        "correlation_max": float(np.max(np.abs(corr_flat))),
+                        "correlation_min": float(np.min(np.abs(corr_flat))),
+                        "high_correlation_pairs": int(np.sum(np.abs(corr_flat) > 0.8))
+                    })
+
+                    corr_csv_path = os.path.join(features_path, "correlation_matrix.csv")
+                    corr_matrix.to_csv(corr_csv_path)
+                    logger.log_artifact(corr_csv_path, "correlations")
+
+                summary_lines = [
+                    "=" * 60,
+                    f"PREPROCESSED DATA EDA SUMMARY {f'({experiment_name})' if experiment_name else ''}",
+                    "=" * 60,
+                    f"Dataset: {train_path}",
+                    f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    f"Split Type: {metadata['split_type']}",
+                    "",
+                    "DATASET OVERVIEW:",
+                    f"  - Total Rows: {len(df):,}",
+                    f"  - Total Columns: {len(df.columns)}",
+                    f"  - Feature Columns: {len(feature_cols)}",
+                    f"  - Numeric Features: {len(numeric_cols)}",
+                    f"  - Categorical Features: {len(categorical_cols)}",
+                    "",
+                    "DATA QUALITY:",
+                    f"  - Total Missing Values: {int(df.isna().sum().sum()):,}",
+                    f"  - Missing Percentage: {metrics['missing_percentage']}%",
+                    "=" * 60
+                ]
+
+                eda_summary = {
+                    'run_id': logger.get_run_id(),
+                    'total_rows': metrics['total_rows'],
+                    'feature_columns': len(feature_cols),
+                    'numeric_features': len(numeric_cols),
+                    'categorical_features': len(categorical_cols)
+                }
 
             logger.log_text("\n".join(summary_lines), "eda_preprocessed_summary.txt")
             print("\n" + "\n".join(summary_lines))
 
             logger.end_run(status="FINISHED")
 
-            context['ti'].xcom_push(key='eda_summary', value={
-                'run_id': logger.get_run_id(),
-                'total_rows': metrics['total_rows'],
-                'feature_columns': len(feature_cols),
-                'numeric_features': len(numeric_cols),
-                'categorical_features': len(categorical_cols)
-            })
+            context['ti'].xcom_push(key='eda_summary', value=eda_summary)
 
             return f"Preprocessed EDA completed and logged to MLflow (Run ID: {logger.get_run_id()})"
 

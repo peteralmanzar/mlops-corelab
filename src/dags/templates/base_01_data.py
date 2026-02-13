@@ -115,7 +115,7 @@ def _perform_eda(config, experiment_name: Optional[str] = None):
                 source=raw_path,
                 name="raw_data",
                 context="raw",
-                targets=",".join(runtime_config.MODEL.get("LABEL_COLUMNS", ["target"]))
+                targets=runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])[0]
             )
 
             # Log dataset info
@@ -293,8 +293,8 @@ def _split_data(config, experiment_name: Optional[str] = None):
 
             try:
                 logger.start_run(run_name=run_name, tags=tags)
-                logger.log_dataset(train_df, source=train_path, name="train_split", context="training", targets=",".join(label_cols))
-                logger.log_dataset(test_df, source=test_path, name="test_split", context="test", targets=",".join(label_cols))
+                logger.log_dataset(train_df, source=train_path, name="train_split", context="training", targets=label_cols[0] if isinstance(label_cols, list) else label_cols)
+                logger.log_dataset(test_df, source=test_path, name="test_split", context="test", targets=label_cols[0] if isinstance(label_cols, list) else label_cols)
                 logger.log_params({"split_type": "simple", "test_size": test_size, "stratify_column": str(stratify_col)})
                 logger.log_metrics({"train_rows": len(train_df), "test_rows": len(test_df)})
                 logger.end_run(status="FINISHED")

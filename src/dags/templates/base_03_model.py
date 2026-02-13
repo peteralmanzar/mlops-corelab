@@ -295,7 +295,11 @@ def _model_build(config, experiment_name: Optional[str] = None):
             print(f"{exp_prefix}Samples: {num_samples} sequences")
 
             label_cols = runtime_config.MODEL.get("LABEL_COLUMNS", ["target"])
-            y = pd.DataFrame(y_arr, columns=label_cols)
+            # Sliding window extracts a single label column — use only the first
+            if y_arr.ndim == 1:
+                y = pd.DataFrame(y_arr, columns=[label_cols[0]])
+            else:
+                y = pd.DataFrame(y_arr, columns=label_cols[:y_arr.shape[1]])
         else:
             # Only read a small sample for task-type detection and feature counting;
             # full data is loaded per-fold in train_fold_model.
@@ -616,10 +620,10 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         sequence_length = model_config.get('sequence_length')
 
         if train_path.endswith('.npy'):
-            X_train = np.load(train_path)
-            y_train = np.load(fold_info.get('train_y_path', train_path.replace('_X.npy', '_y.npy')))
-            X_test = np.load(test_path)
-            y_test = np.load(fold_info.get('test_y_path', test_path.replace('_X.npy', '_y.npy')))
+            X_train = np.load(train_path, mmap_mode='r')
+            y_train = np.load(fold_info.get('train_y_path', train_path.replace('_X.npy', '_y.npy')), mmap_mode='r')
+            X_test = np.load(test_path, mmap_mode='r')
+            y_test = np.load(fold_info.get('test_y_path', test_path.replace('_X.npy', '_y.npy')), mmap_mode='r')
         else:
             train_df = pd.read_csv(train_path)
             test_df = pd.read_csv(test_path)
@@ -1002,7 +1006,16 @@ def _model_register(config, experiment_name: Optional[str] = None):
         except Exception:
             input_example = None
 
-        logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='preprocessed_model', input_example=input_example)
+        signature = None
+        if input_example is not None and len(input_example) > 0:
+            try:
+                from mlflow.models.signature import infer_signature
+                preds = combined_pipeline.transform(input_example)
+                signature = infer_signature(input_example, preds)
+            except Exception as e:
+                print(f"{exp_prefix}Warning: Could not infer model signature: {e}")
+
+        logger.log_sklearn_pipeline(pipeline=combined_pipeline, artifact_path='preprocessed_model', input_example=input_example, signature=signature)
         logger.log_artifact(combined_path, artifact_path='combined_artifacts')
 
         combined_run_id = logger.get_run_id()

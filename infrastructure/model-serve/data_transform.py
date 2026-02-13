@@ -138,10 +138,10 @@ class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
         if self.columns:
             # scikit-learn >=1.2 renamed `sparse` -> `sparse_output`; try the new name
             try:
-                self.encoder = SklearnOneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
+                self.encoder = SklearnOneHotEncoder(sparse_output=True, drop='first', handle_unknown='ignore')
             except TypeError:
                 # fallback for older scikit-learn versions that expect `sparse`
-                self.encoder = SklearnOneHotEncoder(sparse=False, drop='first', handle_unknown='ignore')
+                self.encoder = SklearnOneHotEncoder(sparse=True, drop='first', handle_unknown='ignore')
         else:
             self.encoder = None
 
@@ -155,7 +155,7 @@ class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
         self.encoder.fit(X[existing])
         self._fitted_columns = existing
         return self
-    
+
     def transform(self, X: DataFrame) -> DataFrame:
         if X is None:
             raise ValueError("Input X cannot be None for PipelineOneHotEncoder.transform")
@@ -166,7 +166,8 @@ class PipelineOneHotEncoder(BaseEstimator, TransformerMixin):
         if not existing:
             return X_out
         encoded = self.encoder.transform(X_out[existing])
-        encoded_df = DataFrame(encoded, columns=self.encoder.get_feature_names_out(existing), index=X_out.index)
+        feature_names = self.encoder.get_feature_names_out(existing)
+        encoded_df = pd.DataFrame.sparse.from_spmatrix(encoded, columns=feature_names, index=X_out.index)
         X_out = X_out.drop(existing, axis=1, errors="ignore")
         return pd.concat([X_out, encoded_df], axis=1)
 
@@ -414,11 +415,12 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         A tuple containing a list of DataFrames and a DataFrame.
     """
 
-    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None):
+    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None, stride: int = 1):
         self.column = column
         self.sequence_length = sequence_length
         self.sortlook = sortlook
         self.datetime_column = datetime_column
+        self.stride = max(1, stride)
 
     def _has_datetime_column(self, data: DataFrame) -> bool:
         return (
@@ -460,6 +462,12 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
             exclude_cols.add(self.datetime_column)
         feature_cols = [c for c in X.columns if c not in exclude_cols]
 
+        # Safeguard: drop any non-numeric columns that weren't caught above
+        non_numeric = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(X[c])]
+        if non_numeric:
+            logger.warning("Dropping non-numeric columns from sliding window features: %s", non_numeric)
+            feature_cols = [c for c in feature_cols if c not in non_numeric]
+
         seq_len = self.sequence_length
 
         # Build groups
@@ -479,7 +487,9 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
                     gdf[self.datetime_column], errors='coerce')
                 gdf = gdf.sort_values(by=self.datetime_column)
             gdf = gdf.reset_index(drop=True)
-            n = max(0, len(gdf) - seq_len)
+            n_available = max(0, len(gdf) - seq_len)
+            stride = getattr(self, 'stride', 1)
+            n = (n_available + stride - 1) // stride if n_available > 0 else 0
             if n > 0:
                 prepared.append((key, gdf, n))
                 total += n
@@ -514,7 +524,7 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         idx = 0
         for key, gdf, n in prepared:
             feat = gdf[feature_cols].values.astype(np.float32)
-            offsets = np.arange(n)
+            offsets = np.arange(n) * getattr(self, 'stride', 1)
             row_indices = offsets[:, None] + np.arange(seq_len)
             X_arr[idx:idx + n] = feat[row_indices]
             if has_labels:

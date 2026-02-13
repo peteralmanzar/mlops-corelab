@@ -328,7 +328,7 @@ services:
         MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${MLFLOW_DB_USER:-mlflow}:${MLFLOW_DB_PASSWORD:-mlflow_pwd}@postgres:5432/${MLFLOW_DB_NAME:-mlflow}
         MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
       volumes:
-        - ./artifacts:/mlflow/artifacts
+        - ./artifacts/artifacts:/mlflow/artifacts
         - ./data:/opt/airflow/data
       ports:
         - "5000:5000"

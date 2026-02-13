@@ -415,11 +415,12 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         A tuple containing a list of DataFrames and a DataFrame.
     """
 
-    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None):
+    def __init__(self, column: str = None, sequence_length: int = 60, sortlook: str = None, datetime_column: str = None, stride: int = 1):
         self.column = column
         self.sequence_length = sequence_length
         self.sortlook = sortlook
         self.datetime_column = datetime_column
+        self.stride = max(1, stride)
 
     def _has_datetime_column(self, data: DataFrame) -> bool:
         return (
@@ -461,6 +462,12 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
             exclude_cols.add(self.datetime_column)
         feature_cols = [c for c in X.columns if c not in exclude_cols]
 
+        # Safeguard: drop any non-numeric columns that weren't caught above
+        non_numeric = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(X[c])]
+        if non_numeric:
+            logger.warning("Dropping non-numeric columns from sliding window features: %s", non_numeric)
+            feature_cols = [c for c in feature_cols if c not in non_numeric]
+
         seq_len = self.sequence_length
 
         # Build groups
@@ -480,7 +487,9 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
                     gdf[self.datetime_column], errors='coerce')
                 gdf = gdf.sort_values(by=self.datetime_column)
             gdf = gdf.reset_index(drop=True)
-            n = max(0, len(gdf) - seq_len)
+            n_available = max(0, len(gdf) - seq_len)
+            stride = getattr(self, 'stride', 1)
+            n = (n_available + stride - 1) // stride if n_available > 0 else 0
             if n > 0:
                 prepared.append((key, gdf, n))
                 total += n
@@ -515,7 +524,7 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         idx = 0
         for key, gdf, n in prepared:
             feat = gdf[feature_cols].values.astype(np.float32)
-            offsets = np.arange(n)
+            offsets = np.arange(n) * getattr(self, 'stride', 1)
             row_indices = offsets[:, None] + np.arange(seq_len)
             X_arr[idx:idx + n] = feat[row_indices]
             if has_labels:
@@ -557,6 +566,12 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         if self.datetime_column and isinstance(self.datetime_column, str) and self.datetime_column.strip():
             exclude_cols.add(self.datetime_column)
         feature_cols = [c for c in data.columns if c not in exclude_cols]
+
+        # Safeguard: drop any non-numeric columns that weren't caught above
+        non_numeric = [c for c in feature_cols if not pd.api.types.is_numeric_dtype(data[c])]
+        if non_numeric:
+            logger.warning("Dropping non-numeric columns from sliding window features: %s", non_numeric)
+            feature_cols = [c for c in feature_cols if c not in non_numeric]
         num_features = len(feature_cols)
         seq_len = self.sequence_length
 
@@ -577,7 +592,9 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
                     group_df[self.datetime_column], errors='coerce')
                 group_df = group_df.sort_values(by=self.datetime_column)
             group_df = group_df.reset_index(drop=True)
-            n_seq = max(0, len(group_df) - seq_len)
+            n_available = max(0, len(group_df) - seq_len)
+            stride = getattr(self, 'stride', 1)
+            n_seq = (n_available + stride - 1) // stride if n_available > 0 else 0
             if n_seq > 0:
                 prepared_groups.append((key, group_df, n_seq))
                 total_sequences += n_seq
@@ -613,7 +630,7 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
             for chunk_start in range(0, n_seq, batch_size):
                 chunk_end = min(chunk_start + batch_size, n_seq)
                 # Vectorized: build index array for all windows in this chunk
-                offsets = np.arange(chunk_start, chunk_end)
+                offsets = np.arange(chunk_start, chunk_end) * getattr(self, 'stride', 1)
                 row_indices = offsets[:, None] + np.arange(seq_len)
                 X_mmap[global_idx:global_idx + len(offsets)] = group_features[row_indices]
                 y_arr[global_idx:global_idx + len(offsets)] = group_labels[offsets + seq_len]

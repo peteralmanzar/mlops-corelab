@@ -184,6 +184,7 @@ def build_pipeline(config: Optional[Config] = None) -> Pipeline:
             seq_len = cfg.get("sequence_length", cfg.get("sequenceLength", 60))
             sortlook = cfg.get("sortlook") or cfg.get("symbol_column")
             datetime_column = cfg.get("datetime_column") or cfg.get("datetimeColumn")
+            stride = cfg.get("stride", 1)
             if not isinstance(column, str) or column.strip() == "":
                 continue
             if not isinstance(seq_len, int) or seq_len <= 0:
@@ -192,7 +193,9 @@ def build_pipeline(config: Optional[Config] = None) -> Pipeline:
                 sortlook = None
             if datetime_column is not None and (not isinstance(datetime_column, str) or not datetime_column.strip()):
                 datetime_column = None
-            steps.append((f"sliding_window_{i}", PipelineSlidingWindow(column=column, sequence_length=seq_len, sortlook=sortlook, datetime_column=datetime_column)))
+            if not isinstance(stride, int) or stride <= 0:
+                stride = 1
+            steps.append((f"sliding_window_{i}", PipelineSlidingWindow(column=column, sequence_length=seq_len, sortlook=sortlook, datetime_column=datetime_column, stride=stride)))
         else:
             # unknown step key - ignore
             continue
