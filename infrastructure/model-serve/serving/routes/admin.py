@@ -2,12 +2,18 @@
 Admin routes for FastAPI model serving.
 """
 
+import shutil
 import logging
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from ..schemas import ModelsListResponse, ModelInfo, ReloadResponse, ErrorResponse, ModelFeaturesResponse
 from ..model_manager import ModelManager
 from ..dependencies import get_model_manager
+from ..export_service import ModelExportService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -110,5 +116,68 @@ async def reload_models(manager: ModelManager = Depends(get_model_manager)):
             detail={
                 "error": "reload_error",
                 "detail": str(e)
+            }
+        )
+
+
+def _cleanup_export_temp(zip_path: Path):
+    """Clean up temporary export files after download completes."""
+    try:
+        parent = zip_path.parent
+        shutil.rmtree(parent, ignore_errors=True)
+        logger.info(f"Cleaned up export temp dir: {parent}")
+    except Exception as e:
+        logger.warning(f"Failed to clean up export temp: {e}")
+
+
+@router.post(
+    "/export/{model_name}",
+    responses={
+        404: {"model": ErrorResponse, "description": "Model not found"},
+        500: {"model": ErrorResponse, "description": "Export error"}
+    },
+    summary="Export model as standalone Docker package",
+    description="Download a zip containing a self-contained FastAPI Docker project for the specified model."
+)
+async def export_model(
+    model_name: str,
+    manager: ModelManager = Depends(get_model_manager)
+):
+    """
+    Export a loaded champion model as a standalone Docker package.
+
+    The zip contains a Dockerfile, FastAPI app, model artifacts, and config
+    template — ready to `docker build` and `docker run`.
+    """
+    export_service = ModelExportService(manager)
+
+    try:
+        logger.info(f"Export requested for model: {model_name}")
+        zip_path = export_service.export_model(model_name)
+
+        return FileResponse(
+            path=str(zip_path),
+            media_type="application/zip",
+            filename=f"{model_name}_standalone.zip",
+            background=BackgroundTask(_cleanup_export_temp, zip_path)
+        )
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "model_not_found",
+                "detail": str(e),
+                "model_name": model_name
+            }
+        )
+    except Exception as e:
+        logger.error(f"Export failed for {model_name}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "export_error",
+                "detail": str(e),
+                "model_name": model_name
             }
         )

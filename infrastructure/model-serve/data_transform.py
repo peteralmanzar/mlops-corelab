@@ -487,7 +487,10 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
                     gdf[self.datetime_column], errors='coerce')
                 gdf = gdf.sort_values(by=self.datetime_column)
             gdf = gdf.reset_index(drop=True)
-            n_available = max(0, len(gdf) - seq_len)
+            if has_labels:
+                n_available = max(0, len(gdf) - seq_len)
+            else:
+                n_available = max(0, len(gdf) - seq_len + 1)
             stride = getattr(self, 'stride', 1)
             n = (n_available + stride - 1) // stride if n_available > 0 else 0
             if n > 0:
@@ -495,9 +498,11 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
                 total += n
 
         if total == 0:
+            min_rows = seq_len + 1 if has_labels else seq_len
             raise ValueError(
                 f"No sequences can be created: all groups have fewer than "
-                f"{seq_len} rows (sequence_length)."
+                f"{min_rows} rows (sequence_length"
+                f"{' + 1 for label' if has_labels else ''})."
             )
 
         num_features = len(feature_cols)

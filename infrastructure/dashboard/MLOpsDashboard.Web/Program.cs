@@ -30,6 +30,9 @@ builder.Services.AddScoped<DagGeneratorService>();
 // Add template service
 builder.Services.AddScoped<TemplateService>();
 
+// Add Model Serve API client (for export URLs)
+builder.Services.AddSingleton<ModelServeApiClient>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

@@ -20,9 +20,17 @@ class PredictResponse(BaseModel):
     """Response schema for prediction endpoint."""
     model_name: str = Field(..., description="Name of the model used")
     model_version: str = Field(..., description="Version of the model used")
-    predictions: List[Any] = Field(..., description="Prediction results")
+    predictions: List[Any] = Field(..., description="Prediction results (class labels for classification, values for regression)")
     prediction_count: int = Field(..., description="Number of predictions made")
     inference_time_ms: float = Field(..., description="Inference time in milliseconds")
+    confidence_scores: Optional[List[float]] = Field(
+        None,
+        description="Confidence score per prediction (0-1). Present for classification models only."
+    )
+    class_probabilities: Optional[List[List[float]]] = Field(
+        None,
+        description="Per-class probability arrays. Present for multi-class classification only."
+    )
 
 
 class HealthResponse(BaseModel):

@@ -35,6 +35,7 @@ class LoadedModel:
     feature_dtypes: Optional[Dict[str, str]] = None
     feature_count: Optional[int] = None
     feature_metadata_available: bool = False
+    task_type: Optional[str] = None  # 'regression', 'binary_classification', 'multi_classification'
 
     def predict(self, data) -> Any:
         """Make prediction using the loaded model."""
@@ -144,15 +145,19 @@ class ModelManager:
                 except Exception as e:
                     logger.debug(f"Could not fetch info artifact: {e}")
 
+            # Extract task_type from run params
+            task_type = params.get('task_type')
+
             if feature_columns:
                 return {
                     'input_features': feature_columns,
                     'feature_dtypes': feature_dtypes,
                     'feature_count': len(feature_columns),
-                    'feature_metadata_available': True
+                    'feature_metadata_available': True,
+                    'task_type': task_type
                 }
 
-            return {'feature_metadata_available': False}
+            return {'feature_metadata_available': False, 'task_type': task_type}
 
         except Exception as e:
             logger.warning(f"Failed to fetch feature metadata for run {run_id}: {e}")
@@ -265,7 +270,8 @@ class ModelManager:
             input_features=feature_metadata.get('input_features'),
             feature_dtypes=feature_metadata.get('feature_dtypes'),
             feature_count=feature_metadata.get('feature_count'),
-            feature_metadata_available=feature_metadata.get('feature_metadata_available', False)
+            feature_metadata_available=feature_metadata.get('feature_metadata_available', False),
+            task_type=feature_metadata.get('task_type')
         )
 
     def load_all_champions(self) -> Dict[str, LoadedModel]:

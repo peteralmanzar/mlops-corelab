@@ -460,6 +460,8 @@ services:
       Mlflow__BaseUrl: http://mlflow:5000
       Airflow__BaseUrl: http://airflow-apiserver:8080
       DagOutput__Path: /app/dags
+      ModelServe__BaseUrl: http://model-serve:8000
+      ModelServe__ExternalBaseUrl: http://localhost:8000
     volumes:
       - ./src/dags:/app/dags:rw
     ports:

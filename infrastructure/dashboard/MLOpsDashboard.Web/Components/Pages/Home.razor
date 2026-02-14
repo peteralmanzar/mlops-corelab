@@ -2,6 +2,7 @@
 @using MLOpsDashboard.Web.Services
 @inject MlflowApiClient MlflowClient
 @inject TemplateService TemplateService
+@inject ModelServeApiClient ModelServeClient
 
 <PageTitle>MLOps Dashboard</PageTitle>
 
@@ -119,10 +120,18 @@
                             {
                                 <li class="list-group-item d-flex justify-content-between align-items-center">
                                     @model.Name
-                                    @if (model.LatestVersions?.Any(v => v.Aliases?.Contains("champion") == true) == true)
-                                    {
-                                        <span class="badge bg-success">Champion</span>
-                                    }
+                                    <div>
+                                        @if (model.LatestVersions?.Any(v => v.Aliases?.Contains("champion") == true) == true)
+                                        {
+                                            <span class="badge bg-success me-2">Champion</span>
+                                            <a href="@ModelServeClient.GetExportUrl(model.Name)"
+                                               class="btn btn-outline-secondary btn-sm"
+                                               target="_blank"
+                                               title="Export as standalone Docker package">
+                                                Export
+                                            </a>
+                                        }
+                                    </div>
                                 </li>
                             }
                         </ul>

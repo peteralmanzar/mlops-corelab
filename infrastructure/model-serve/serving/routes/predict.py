@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..schemas import PredictRequest, PredictResponse, ErrorResponse
 from ..model_manager import ModelManager
 from ..dependencies import get_model_manager
+from ..prediction_utils import predict_with_confidence
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Predictions"])
@@ -56,34 +57,27 @@ async def predict(
         )
 
     try:
-        # Convert input data to DataFrame
         df = pd.DataFrame(request.data)
 
-        # Time the prediction
         start_time = time.time()
-
-        # Make prediction
-        predictions = loaded_model.predict(df)
-
-        inference_time = (time.time() - start_time) * 1000  # Convert to ms
-
-        # Convert predictions to list
-        if hasattr(predictions, 'tolist'):
-            predictions_list = predictions.tolist()
-        else:
-            predictions_list = list(predictions)
+        result = predict_with_confidence(
+            loaded_model.model, df, task_type=loaded_model.task_type
+        )
+        inference_time = (time.time() - start_time) * 1000
 
         logger.info(
             f"Prediction completed: model={model_name}, "
-            f"count={len(predictions_list)}, time={inference_time:.2f}ms"
+            f"count={len(result['predictions'])}, time={inference_time:.2f}ms"
         )
 
         return PredictResponse(
             model_name=loaded_model.name,
             model_version=loaded_model.version,
-            predictions=predictions_list,
-            prediction_count=len(predictions_list),
-            inference_time_ms=round(inference_time, 2)
+            predictions=result["predictions"],
+            prediction_count=len(result["predictions"]),
+            inference_time_ms=round(inference_time, 2),
+            confidence_scores=result["confidence_scores"],
+            class_probabilities=result["class_probabilities"],
         )
 
     except Exception as e:
