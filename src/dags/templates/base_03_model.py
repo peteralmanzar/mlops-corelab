@@ -639,6 +639,12 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
         print(f"{exp_prefix}Train shape: X={X_train.shape}, y={y_train.shape}")
         print(f"{exp_prefix}Test shape: X={X_test.shape}, y={y_test.shape}")
 
+        for arr_name, arr in [("X_train", X_train), ("y_train", y_train), ("X_test", X_test), ("y_test", y_test)]:
+            nan_count = np.count_nonzero(np.isnan(arr))
+            inf_count = np.count_nonzero(np.isinf(arr))
+            if nan_count > 0 or inf_count > 0:
+                print(f"{exp_prefix}WARNING: {arr_name} contains {nan_count} NaN and {inf_count} Inf values")
+
         task_type = model_config['task_type']
         num_features = model_config['num_features']
         num_classes = model_config['num_classes']
@@ -808,6 +814,13 @@ def _create_train_fold_model_task(config, experiment_name: Optional[str] = None)
 
             final_metrics['total_epochs_trained'] = len(history.history['loss'])
             final_metrics['stopped_early'] = int(len(history.history['loss']) < model_config['epochs'])
+
+            nan_keys = [k for k, v in final_metrics.items() if isinstance(v, float) and (np.isnan(v) or np.isinf(v))]
+            if nan_keys:
+                print(f"{exp_prefix}WARNING: NaN/Inf in metrics: {nan_keys}. Replacing with -999.0")
+                for k in nan_keys:
+                    final_metrics[k] = -999.0
+                final_metrics['has_nan_metrics'] = 1
 
             logger.log_metrics(final_metrics)
 

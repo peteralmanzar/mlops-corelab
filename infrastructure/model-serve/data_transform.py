@@ -541,6 +541,16 @@ class PipelineSlidingWindow(BaseEstimator, TransformerMixin):
         if isinstance(X_arr, np.memmap):
             X_arr.flush()
 
+        if y_arr is not None:
+            valid_mask = ~np.isnan(y_arr)
+            if not valid_mask.all():
+                n_dropped = (~valid_mask).sum()
+                logger.warning(
+                    "Dropped %d windows with NaN labels (out of %d total)",
+                    n_dropped, idx)
+                X_arr = X_arr[valid_mask]
+                y_arr = y_arr[valid_mask]
+
         self.last_y_ = y_arr
         return X_arr
 
